@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
+from unicodedata import normalize as normalize_unicode
+from urllib.parse import urlsplit, urlunsplit
 
 from buscador_de_vaga.domain import (
     CandidateProfile,
@@ -114,7 +116,7 @@ class OpportunityDiscovery:
             limit=criteria.limit,
         )
         postings = self._source.search(query)
-        opportunities = tuple(_to_opportunity(posting) for posting in postings)
+        opportunities = _consolidate_postings(postings)
 
         return DiscoveryResult(
             candidate_profile_id=profile.id,
@@ -129,19 +131,150 @@ class OpportunityDiscovery:
         )
 
 
-def _to_opportunity(posting: JobPosting) -> Opportunity:
-    return Opportunity(
-        id=f"{posting.source_name}:{posting.external_id}",
-        title=_normalize_required_text(posting.title),
-        company=_normalize_optional_text(posting.company),
-        location=_normalize_optional_text(posting.location),
-        source_url=_normalize_required_text(posting.source_url),
-        postings=(posting,),
+def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity, ...]:
+    """Forma componentes fortes e só depois aplica equivalência textual inequívoca."""
+    parents = list(range(len(postings)))
+    identity_owner: dict[tuple[str, ...], int] = {}
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for index, posting in enumerate(postings):
+        for identity in _strong_identity_keys(posting):
+            owner = identity_owner.setdefault(identity, index)
+            union(index, owner)
+
+    strong_components: dict[int, list[int]] = {}
+    for index in range(len(postings)):
+        strong_components.setdefault(find(index), []).append(index)
+
+    fields_owner: dict[tuple[str, ...], int] = {}
+    for component in strong_components.values():
+        # Triplas conflitantes tornam qualquer expansão textual desse componente incerta.
+        fields_identities: set[tuple[str, ...]] = set()
+        for index in component:
+            fields_identity = _complete_fields_identity(postings[index])
+            if fields_identity is not None:
+                fields_identities.add(fields_identity)
+        if len(fields_identities) == 1:
+            fields_identity = fields_identities.pop()
+            owner = fields_owner.setdefault(fields_identity, component[0])
+            union(component[0], owner)
+
+    groups: dict[int, list[JobPosting]] = {}
+    for index, posting in enumerate(postings):
+        groups.setdefault(find(index), []).append(posting)
+
+    normalized_groups = tuple(
+        tuple(sorted(group, key=_posting_sort_key)) for group in groups.values()
+    )
+    return tuple(
+        _to_opportunity(group)
+        for group in sorted(
+            normalized_groups,
+            key=lambda group: min(
+                (posting.source_name, posting.external_id) for posting in group
+            ),
+        )
     )
 
 
+def _strong_identity_keys(posting: JobPosting) -> tuple[tuple[str, ...], ...]:
+    identities: list[tuple[str, ...]] = []
+    if posting.source_name.strip() and posting.external_id.strip():
+        identities.append(("external-id", posting.source_name, posting.external_id))
+
+    canonical_url = _canonical_url(posting.source_url)
+    if canonical_url is not None:
+        identities.append(("canonical-url", canonical_url))
+
+    return tuple(identities)
+
+
+def _complete_fields_identity(posting: JobPosting) -> tuple[str, ...] | None:
+    title = _comparison_text(posting.title)
+    company = _comparison_text(posting.company)
+    location = _comparison_text(posting.location)
+    if title is None or company is None or location is None:
+        return None
+    return ("complete-fields", company, title, location)
+
+
+def _to_opportunity(postings: tuple[JobPosting, ...]) -> Opportunity:
+    posting = postings[0]
+    source_name, external_id = min(
+        (candidate.source_name, candidate.external_id) for candidate in postings
+    )
+    return Opportunity(
+        id=f"{source_name}:{external_id}",
+        title=_normalize_required_text(posting.title),
+        company=_normalize_optional_text(posting.company),
+        location=_normalize_optional_text(posting.location),
+        source_url=_canonical_url(posting.source_url)
+        or _normalize_required_text(posting.source_url),
+        postings=postings,
+    )
+
+
+def _posting_sort_key(posting: JobPosting) -> tuple[str, ...]:
+    return (
+        posting.source_name,
+        posting.external_id,
+        _canonical_url(posting.source_url) or _normalize_required_text(posting.source_url),
+        _normalize_required_text(posting.title),
+        _normalize_optional_text(posting.company) or "",
+        _normalize_optional_text(posting.location) or "",
+        posting.collected_at.isoformat(),
+        posting.source_updated_at.isoformat() if posting.source_updated_at else "",
+        posting.summary or "",
+        posting.title,
+        posting.company or "",
+        posting.location or "",
+        posting.source_url,
+    )
+
+
+def _canonical_url(value: str) -> str | None:
+    """Canonicaliza apenas transformações seguras para identidade HTTP(S)."""
+    normalized = _normalize_required_text(value)
+    if not normalized or any(character.isspace() for character in normalized):
+        return None
+
+    try:
+        parts = urlsplit(normalized)
+        scheme = parts.scheme.casefold()
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        return None
+
+    if scheme not in {"http", "https"} or hostname is None:
+        return None
+    if parts.username is not None or parts.password is not None:
+        return None
+
+    host = hostname.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None and not (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        host = f"{host}:{port}"
+
+    return urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
+
+
 def _normalize_required_text(value: str) -> str:
-    return " ".join(value.split())
+    return " ".join(normalize_unicode("NFC", value).split())
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -149,3 +282,8 @@ def _normalize_optional_text(value: str | None) -> str | None:
         return None
     normalized = _normalize_required_text(value)
     return normalized or None
+
+
+def _comparison_text(value: str | None) -> str | None:
+    normalized = _normalize_optional_text(value)
+    return normalized.casefold() if normalized is not None else None
