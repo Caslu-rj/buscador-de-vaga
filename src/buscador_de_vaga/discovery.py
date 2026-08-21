@@ -2,6 +2,7 @@
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal, Protocol
 from unicodedata import normalize as normalize_unicode
@@ -9,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    EligibilityStatus,
     EntryProgram,
     Evidence,
     EvidenceAssertion,
@@ -155,6 +157,7 @@ _SKILL_CONTEXT_TERMS = (
     "conhecimentos",
     "desejável",
     "desejavel",
+    "diferencial",
     "experiência",
     "experiencia",
     "habilidade",
@@ -164,6 +167,36 @@ _SKILL_CONTEXT_TERMS = (
     "skills",
     "tecnologia",
     "tecnologias",
+)
+
+_BLOCKING_IMPORTANCE_TERMS = (
+    "mandatory",
+    "must have",
+    "obrigatoria",
+    "obrigatórias",
+    "obrigatorio",
+    "obrigatórios",
+    "obrigatória",
+    "obrigatório",
+    "required",
+)
+
+_PREFERRED_IMPORTANCE_TERMS = (
+    "desejavel",
+    "desejável",
+    "diferencial",
+    "nice to have",
+    "preferencial",
+    "preferred",
+)
+
+_NEGATED_BLOCKING_TERMS = (
+    "nao obrigatoria",
+    "nao obrigatorio",
+    "não obrigatória",
+    "não obrigatório",
+    "not mandatory",
+    "not required",
 )
 
 _ENTRY_PROGRAM_ALIASES: dict[EntryProgram, tuple[str, ...]] = {
@@ -212,6 +245,10 @@ _DIMENSION_WEIGHTS: tuple[tuple[FitDimension, int], ...] = (
     (FitDimension.ENTRY_PROGRAM_SENIORITY, 20),
     (FitDimension.LOCATION_WORKPLACE_MODE, 15),
 )
+_ELIGIBILITY_ORDER = {
+    EligibilityStatus.ELIGIBLE: 0,
+    EligibilityStatus.UNCERTAIN: 1,
+}
 
 type _ExternalIdentity = tuple[Literal["external-id"], str, str]
 type _CanonicalUrlIdentity = tuple[Literal["canonical-url"], str]
@@ -227,12 +264,22 @@ class _RequirementSignals:
             RequirementSubject, set[Provenance]
         ] = {}
         self._values_by_kind: dict[RequirementKind, set[str]] = {}
+        self._importances_by_subject: dict[
+            RequirementSubject, set[RequirementImportance]
+        ] = {}
 
-    def record(self, subject: RequirementSubject, provenance: Provenance) -> None:
+    def record(
+        self,
+        subject: RequirementSubject,
+        provenance: Provenance,
+        *,
+        importance: RequirementImportance = RequirementImportance.UNKNOWN,
+    ) -> None:
         self._values_by_kind.setdefault(subject.kind, set()).add(
             subject.resolved_value
         )
         self._provenance_by_subject.setdefault(subject, set()).add(provenance)
+        self._importances_by_subject.setdefault(subject, set()).add(importance)
 
     def to_requirements(self, dimension: FitDimension) -> tuple[Requirement, ...]:
         return tuple(
@@ -244,7 +291,9 @@ class _RequirementSignals:
                     f"{subject.kind.value} {subject.resolved_value}."
                 ),
                 dimension=dimension,
-                importance=RequirementImportance.UNKNOWN,
+                importance=_combined_importance(
+                    self._importances_by_subject[subject]
+                ),
                 provenance=tuple(
                     sorted(
                         self._provenance_by_subject[subject],
@@ -287,6 +336,14 @@ class OpportunityDiscovery:
         match_assessments = tuple(
             _assess_opportunity(opportunity, profile) for opportunity in opportunities
         )
+        assessments_by_opportunity_id = {
+            assessment.opportunity_id: assessment
+            for assessment in match_assessments
+        }
+        shortlist_items = _ranked_shortlist_items(
+            opportunities,
+            assessments_by_opportunity_id,
+        )[: criteria.limit]
 
         return DiscoveryResult(
             candidate_profile_id=profile.id,
@@ -298,8 +355,58 @@ class OpportunityDiscovery:
             postings=postings,
             opportunities=opportunities,
             match_assessments=match_assessments,
-            shortlist=Shortlist(items=opportunities),
+            shortlist=Shortlist(items=shortlist_items),
         )
+
+
+def _ranked_shortlist_items(
+    opportunities: tuple[Opportunity, ...],
+    assessments_by_opportunity_id: dict[str, MatchAssessment],
+) -> tuple[Opportunity, ...]:
+    visible_opportunities = (
+        opportunity
+        for opportunity in opportunities
+        if assessments_by_opportunity_id[opportunity.id].eligibility_status
+        is not EligibilityStatus.INELIGIBLE
+    )
+    return tuple(
+        sorted(
+            visible_opportunities,
+            key=lambda opportunity: _shortlist_sort_key(
+                opportunity,
+                assessments_by_opportunity_id[opportunity.id],
+            ),
+        )
+    )
+
+
+def _shortlist_sort_key(
+    opportunity: Opportunity,
+    assessment: MatchAssessment,
+) -> tuple[int, int, int, float, str]:
+    latest_update = _latest_source_update_timestamp(opportunity)
+    return (
+        _ELIGIBILITY_ORDER[assessment.eligibility_status],
+        -assessment.fit_score.value,
+        0 if latest_update is not None else 1,
+        -latest_update if latest_update is not None else 0.0,
+        opportunity.id,
+    )
+
+
+def _latest_source_update_timestamp(opportunity: Opportunity) -> float | None:
+    known_updates = tuple(
+        _utc_timestamp(posting.source_updated_at)
+        for posting in opportunity.postings
+        if posting.source_updated_at is not None
+    )
+    return max(known_updates, default=None)
+
+
+def _utc_timestamp(value: datetime) -> float:
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).timestamp()
 
 
 def _assess_opportunity(
@@ -409,8 +516,12 @@ def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
 
 def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     provenance_by_skill: dict[str, set[Provenance]] = {}
+    importances_by_skill: dict[str, set[RequirementImportance]] = {}
     for posting in opportunity.postings:
         for skill in _skills_in_text(posting.title):
+            importances_by_skill.setdefault(skill, set()).add(
+                RequirementImportance.UNKNOWN
+            )
             provenance_by_skill.setdefault(skill, set()).add(
                 Provenance(
                     origin=posting.source_name,
@@ -420,7 +531,8 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
 
         if posting.summary is None:
             continue
-        for skill in _skills_in_explicit_context(posting.summary):
+        for skill, importance in _skill_signals_in_explicit_context(posting.summary):
+            importances_by_skill.setdefault(skill, set()).add(importance)
             provenance_by_skill.setdefault(skill, set()).add(
                 Provenance(
                     origin=posting.source_name,
@@ -434,7 +546,7 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
             subject=RequirementSubject.skill(skill),
             statement=f"A Opportunity menciona explicitamente a skill {skill}.",
             dimension=FitDimension.SKILLS,
-            importance=RequirementImportance.UNKNOWN,
+            importance=_combined_importance(importances_by_skill[skill]),
             provenance=tuple(
                 sorted(provenance_by_skill[skill], key=_provenance_sort_key)
             ),
@@ -452,16 +564,68 @@ def _skills_in_text(value: str) -> set[str]:
     }
 
 
-def _skills_in_explicit_context(summary: str) -> set[str]:
-    skills: set[str] = set()
+def _skill_signals_in_explicit_context(
+    summary: str,
+) -> set[tuple[str, RequirementImportance]]:
+    signals: set[tuple[str, RequirementImportance]] = set()
+    for clause, importance in _explicit_requirement_clauses(
+        summary,
+        context_terms=_SKILL_CONTEXT_TERMS,
+    ):
+        skills = _skills_in_text(clause)
+        if len(skills) > 1:
+            importance = RequirementImportance.UNKNOWN
+        signals.update((skill, importance) for skill in skills)
+    return signals
+
+
+def _explicit_requirement_clauses(
+    summary: str,
+    *,
+    context_terms: tuple[str, ...],
+) -> tuple[tuple[str, RequirementImportance], ...]:
+    clauses: list[tuple[str, RequirementImportance]] = []
     for clause in re.split(r"[.!?;\r\n]+", summary):
         normalized_clause = _comparison_text(clause) or ""
         if any(
             _contains_term(normalized_clause, term)
-            for term in _SKILL_CONTEXT_TERMS
+            for term in (
+                *context_terms,
+                *_BLOCKING_IMPORTANCE_TERMS,
+                *_PREFERRED_IMPORTANCE_TERMS,
+            )
         ):
-            skills.update(_skills_in_text(clause))
-    return skills
+            clauses.append((clause, _importance_in_clause(normalized_clause)))
+    return tuple(clauses)
+
+
+def _importance_in_clause(normalized_clause: str) -> RequirementImportance:
+    without_negated_blocking = normalized_clause
+    for term in _NEGATED_BLOCKING_TERMS:
+        without_negated_blocking = without_negated_blocking.replace(term, " ")
+
+    has_blocking = any(
+        _contains_term(without_negated_blocking, term)
+        for term in _BLOCKING_IMPORTANCE_TERMS
+    )
+    has_preferred = any(
+        _contains_term(normalized_clause, term)
+        for term in _PREFERRED_IMPORTANCE_TERMS
+    )
+    if has_blocking == has_preferred:
+        return RequirementImportance.UNKNOWN
+    if has_blocking:
+        return RequirementImportance.BLOCKING
+    return RequirementImportance.PREFERRED
+
+
+def _combined_importance(
+    importances: set[RequirementImportance],
+) -> RequirementImportance:
+    explicit_importances = importances - {RequirementImportance.UNKNOWN}
+    if len(explicit_importances) == 1:
+        return next(iter(explicit_importances))
+    return RequirementImportance.UNKNOWN
 
 
 def _entry_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
@@ -518,14 +682,17 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                     ),
                 )
 
-        if posting.summary is not None and _has_workplace_context(posting.summary):
-            for mode in _workplace_modes_in_text(posting.summary):
+        if posting.summary is not None:
+            for mode, importance in _workplace_mode_signals_in_explicit_context(
+                posting.summary
+            ):
                 signals.record(
                     RequirementSubject.workplace_mode(mode),
                     Provenance(
                         origin=posting.source_name,
                         locator=f"{posting.external_id}#summary",
                     ),
+                    importance=importance,
                 )
 
     return signals.to_requirements(FitDimension.LOCATION_WORKPLACE_MODE)
@@ -540,9 +707,18 @@ def _workplace_modes_in_text(value: str) -> set[WorkplaceMode]:
     }
 
 
-def _has_workplace_context(summary: str) -> bool:
-    normalized = _comparison_text(summary) or ""
-    return any(_contains_term(normalized, term) for term in _WORKPLACE_CONTEXT_TERMS)
+def _workplace_mode_signals_in_explicit_context(
+    summary: str,
+) -> set[tuple[WorkplaceMode, RequirementImportance]]:
+    signals: set[tuple[WorkplaceMode, RequirementImportance]] = set()
+    for clause, importance in _explicit_requirement_clauses(
+        summary,
+        context_terms=_WORKPLACE_CONTEXT_TERMS,
+    ):
+        signals.update(
+            (mode, importance) for mode in _workplace_modes_in_text(clause)
+        )
+    return signals
 
 
 def _categories_in_title(title: str) -> set[JobCategory]:
