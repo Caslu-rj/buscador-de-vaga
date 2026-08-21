@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from unicodedata import normalize as normalize_unicode
 from urllib.parse import urlsplit, urlunsplit
 
@@ -92,6 +92,11 @@ _CATEGORY_SEARCH_TERMS: dict[JobCategory, str] = {
     JobCategory.DATA: "analista de dados",
 }
 
+type _ExternalIdentity = tuple[Literal["external-id"], str, str]
+type _CanonicalUrlIdentity = tuple[Literal["canonical-url"], str]
+type _StrongIdentity = _ExternalIdentity | _CanonicalUrlIdentity
+type _CompleteFieldsIdentity = tuple[str, str, str]
+
 
 class OpportunityDiscovery:
     """Orquestra a descoberta sem expor suas etapas internas."""
@@ -134,7 +139,7 @@ class OpportunityDiscovery:
 def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity, ...]:
     """Forma componentes fortes e só depois aplica equivalência textual inequívoca."""
     parents = list(range(len(postings)))
-    identity_owner: dict[tuple[str, ...], int] = {}
+    identity_owner: dict[_StrongIdentity, int] = {}
 
     def find(index: int) -> int:
         while parents[index] != index:
@@ -157,10 +162,10 @@ def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity
     for index in range(len(postings)):
         strong_components.setdefault(find(index), []).append(index)
 
-    fields_owner: dict[tuple[str, ...], int] = {}
+    fields_owner: dict[_CompleteFieldsIdentity, int] = {}
     for component in strong_components.values():
         # Triplas conflitantes tornam qualquer expansão textual desse componente incerta.
-        fields_identities: set[tuple[str, ...]] = set()
+        fields_identities: set[_CompleteFieldsIdentity] = set()
         for index in component:
             fields_identity = _complete_fields_identity(postings[index])
             if fields_identity is not None:
@@ -188,8 +193,8 @@ def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity
     )
 
 
-def _strong_identity_keys(posting: JobPosting) -> tuple[tuple[str, ...], ...]:
-    identities: list[tuple[str, ...]] = []
+def _strong_identity_keys(posting: JobPosting) -> tuple[_StrongIdentity, ...]:
+    identities: list[_StrongIdentity] = []
     if posting.source_name.strip() and posting.external_id.strip():
         identities.append(("external-id", posting.source_name, posting.external_id))
 
@@ -200,13 +205,13 @@ def _strong_identity_keys(posting: JobPosting) -> tuple[tuple[str, ...], ...]:
     return tuple(identities)
 
 
-def _complete_fields_identity(posting: JobPosting) -> tuple[str, ...] | None:
+def _complete_fields_identity(posting: JobPosting) -> _CompleteFieldsIdentity | None:
     title = _comparison_text(posting.title)
     company = _comparison_text(posting.company)
     location = _comparison_text(posting.location)
     if title is None or company is None or location is None:
         return None
-    return ("complete-fields", company, title, location)
+    return (company, title, location)
 
 
 def _to_opportunity(postings: tuple[JobPosting, ...]) -> Opportunity:
@@ -270,7 +275,7 @@ def _canonical_url(value: str) -> str | None:
     ):
         host = f"{host}:{port}"
 
-    return urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
+    return urlunsplit((scheme, host, parts.path or "/", parts.query, parts.fragment))
 
 
 def _normalize_required_text(value: str) -> str:

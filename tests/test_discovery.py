@@ -95,19 +95,7 @@ def test_discover_consolida_postings_da_mesma_fonte_com_o_mesmo_id() -> None:
         source_url="https://mirror.example.invalid/job-001",
         collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
     )
-    profile = CandidateProfile(
-        id="candidate-example",
-        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
-    )
-    criteria = SearchCriteria(
-        category=JobCategory.SOFTWARE_DEVELOPMENT,
-        location="Rio de Janeiro, RJ",
-        limit=10,
-    )
-
-    result = OpportunityDiscovery(
-        source=StubJobSource((first_posting, repeated_posting))
-    ).discover(profile, criteria)
+    result = _discover((first_posting, repeated_posting))
 
     assert result.postings == (first_posting, repeated_posting)
     assert result.source_report.postings_received == 2
@@ -138,29 +126,45 @@ def test_discover_consolida_postings_com_a_mesma_url_canonica() -> None:
         title="Backend Engineer",
         company="ACME Labs",
         location="Brasil",
-        source_url="https://jobs.example.invalid/vagas/42",
+        source_url="https://jobs.example.invalid/vagas/42#descricao",
         collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
     )
-    profile = CandidateProfile(
-        id="candidate-example",
-        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
-    )
-    criteria = SearchCriteria(
-        category=JobCategory.SOFTWARE_DEVELOPMENT,
-        location="Brasil",
-        limit=10,
-    )
-
-    result = OpportunityDiscovery(
-        source=StubJobSource((first_posting, second_posting))
-    ).discover(profile, criteria)
+    result = _discover((first_posting, second_posting))
 
     assert len(result.opportunities) == 1
     opportunity = result.opportunities[0]
     assert opportunity.id == "alpha:a-42"
-    assert opportunity.source_url == "https://jobs.example.invalid/vagas/42"
+    assert opportunity.source_url == "https://jobs.example.invalid/vagas/42#descricao"
     assert opportunity.postings == (first_posting, second_posting)
     assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_nao_consolida_hash_routes_distintas() -> None:
+    first_posting = JobPosting(
+        source_name="alpha",
+        external_id="a-001",
+        title="Desenvolvedor Python",
+        company="ACME Tecnologia",
+        location="Rio de Janeiro, RJ",
+        source_url="https://jobs.example.invalid/#/jobs/1",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+    second_posting = JobPosting(
+        source_name="beta",
+        external_id="b-001",
+        title="Backend Engineer",
+        company="Beta Labs",
+        location="São Paulo, SP",
+        source_url="https://jobs.example.invalid/#/jobs/2",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+    )
+
+    result = _discover((first_posting, second_posting))
+
+    assert tuple(opportunity.id for opportunity in result.opportunities) == (
+        "alpha:a-001",
+        "beta:b-001",
+    )
 
 
 def test_discover_consolida_tripla_completa_apos_normalizacao_exata() -> None:
@@ -182,19 +186,7 @@ def test_discover_consolida_tripla_completa_apos_normalizacao_exata() -> None:
         source_url="https://beta.example.invalid/b-001",
         collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
     )
-    profile = CandidateProfile(
-        id="candidate-example",
-        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
-    )
-    criteria = SearchCriteria(
-        category=JobCategory.SOFTWARE_DEVELOPMENT,
-        location="São Paulo, SP",
-        limit=10,
-    )
-
-    result = OpportunityDiscovery(
-        source=StubJobSource((first_posting, second_posting))
-    ).discover(profile, criteria)
+    result = _discover((first_posting, second_posting))
 
     assert len(result.opportunities) == 1
     opportunity = result.opportunities[0]
@@ -345,7 +337,7 @@ def test_discover_aplica_fecho_transitivo_das_identidades_fortes() -> None:
         title="Backend Engineer",
         company="Beta Labs",
         location="São Paulo, SP",
-        source_url="https://jobs.example.invalid/bridge",
+        source_url="https://jobs.example.invalid/bridge#details",
         collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
     )
     url_bridge = JobPosting(
