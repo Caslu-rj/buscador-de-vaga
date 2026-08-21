@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -108,20 +109,12 @@ def test_jooble_search_traduz_403_para_falha_de_autenticacao_segura() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, text=raw_payload_sentinel)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.AUTHENTICATION
     assert str(error) == "A credencial do Jooble foi rejeitada."
     assert error.action == "Solicite ou configure uma chave brasileira válida do Jooble."
     assert error.retryable is False
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert raw_payload_sentinel not in unsafe_text
+    _assert_failure_is_sanitized(error, raw_payload_sentinel)
 
 
 def test_jooble_search_traduz_429_para_limite_sem_retry_automatico() -> None:
@@ -130,20 +123,12 @@ def test_jooble_search_traduz_429_para_limite_sem_retry_automatico() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, text=raw_payload_sentinel)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.RATE_LIMIT
     assert str(error) == "O Jooble limitou a busca."
     assert error.action == "Verifique a quota da chave e aguarde antes de tentar novamente."
     assert error.retryable is True
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert raw_payload_sentinel not in unsafe_text
+    _assert_failure_is_sanitized(error, raw_payload_sentinel)
 
 
 def test_jooble_search_traduz_timeout_para_falha_temporaria_segura() -> None:
@@ -152,21 +137,12 @@ def test_jooble_search_traduz_timeout_para_falha_temporaria_segura() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout(timeout_sentinel, request=request)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.TIMEOUT
     assert str(error) == "O Jooble não respondeu dentro do tempo limite."
     assert error.action == "Tente novamente mais tarde; nenhuma repetição automática foi feita."
     assert error.retryable is True
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert timeout_sentinel not in unsafe_text
-    assert error.__context__ is None
+    _assert_failure_is_sanitized(error, timeout_sentinel)
 
 
 def test_jooble_search_sanitiza_falha_de_transporte() -> None:
@@ -175,21 +151,12 @@ def test_jooble_search_sanitiza_falha_de_transporte() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError(transport_sentinel, request=request)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.UNAVAILABLE
     assert str(error) == "Não foi possível conectar ao Jooble."
     assert error.action == "Tente novamente mais tarde; nenhuma repetição automática foi feita."
     assert error.retryable is True
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert transport_sentinel not in unsafe_text
-    assert error.__context__ is None
+    _assert_failure_is_sanitized(error, transport_sentinel)
 
 
 def test_jooble_search_traduz_5xx_para_indisponibilidade_segura() -> None:
@@ -198,21 +165,12 @@ def test_jooble_search_traduz_5xx_para_indisponibilidade_segura() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text=raw_payload_sentinel)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.UNAVAILABLE
     assert str(error) == "O Jooble está temporariamente indisponível."
     assert error.action == "Tente novamente mais tarde; nenhuma repetição automática foi feita."
     assert error.retryable is True
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert raw_payload_sentinel not in unsafe_text
-    assert error.__context__ is None
+    _assert_failure_is_sanitized(error, raw_payload_sentinel)
 
 
 def test_jooble_search_traduz_outro_status_http_para_falha_de_contrato() -> None:
@@ -224,55 +182,27 @@ def test_jooble_search_traduz_outro_status_http_para_falha_de_contrato() -> None
             json={"totalCount": 0, "jobs": [], "detail": raw_payload_sentinel},
         )
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.CONTRACT
     assert str(error) == "A resposta do Jooble não corresponde ao formato esperado."
     assert error.retryable is False
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert raw_payload_sentinel not in unsafe_text
+    _assert_failure_is_sanitized(error, raw_payload_sentinel)
 
 
 def test_jooble_search_rejeita_payload_incompativel_sem_expor_conteudo() -> None:
     raw_payload_sentinel = "RAW_PAYLOAD_SENTINEL"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "totalCount": 1,
-                "jobs": [
-                    {
-                        "title": "Vaga sem identidade",
-                        "snippet": raw_payload_sentinel,
-                    }
-                ],
-            },
-        )
+        return httpx.Response(200, text=raw_payload_sentinel)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        source = JoobleJobSource(api_key=API_KEY, client=client)
-
-        with pytest.raises(JobSourceError) as captured:
-            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
-
-    error = captured.value
+    error = _capture_search_failure(handler)
     assert error.kind is JobSourceFailureKind.CONTRACT
     assert str(error) == "A resposta do Jooble não corresponde ao formato esperado."
     assert error.action == (
         "Verifique se a integração está atualizada e reporte uma possível mudança no contrato."
     )
     assert error.retryable is False
-    unsafe_text = f"{error!r} {error.action}"
-    assert API_KEY not in unsafe_text
-    assert raw_payload_sentinel not in unsafe_text
-    assert error.__context__ is None
+    _assert_failure_is_sanitized(error, raw_payload_sentinel)
 
 
 def test_jooble_search_retorna_tupla_vazia_quando_nao_ha_vagas() -> None:
@@ -289,3 +219,22 @@ def test_jooble_search_retorna_tupla_vazia_quando_nao_ha_vagas() -> None:
 
 def _read_fixture(name: str) -> object:
     return json.loads((FIXTURES_DIRECTORY / name).read_text(encoding="utf-8"))
+
+
+def _capture_search_failure(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> JobSourceError:
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        source = JoobleJobSource(api_key=API_KEY, client=client)
+
+        with pytest.raises(JobSourceError) as captured:
+            source.search(JobSourceQuery(keywords="Python", location="Brasil", limit=1))
+
+    return captured.value
+
+
+def _assert_failure_is_sanitized(error: JobSourceError, unsafe_marker: str) -> None:
+    safe_surface = f"{error!r} {error.action}"
+    assert API_KEY not in safe_surface
+    assert unsafe_marker not in safe_surface
+    assert error.__context__ is None
