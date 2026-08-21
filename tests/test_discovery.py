@@ -9,8 +9,13 @@ from buscador_de_vaga.discovery import (
 )
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    Evidence,
+    EvidenceAssertion,
     JobCategory,
     JobPosting,
+    Provenance,
+    RequirementKind,
+    RequirementSubject,
     SearchCriteria,
 )
 
@@ -25,8 +30,12 @@ class StubJobSource:
         return self._postings
 
 
-def _discover(postings: tuple[JobPosting, ...]) -> DiscoveryResult:
-    profile = CandidateProfile(
+def _discover(
+    postings: tuple[JobPosting, ...],
+    *,
+    profile: CandidateProfile | None = None,
+) -> DiscoveryResult:
+    candidate_profile = profile or CandidateProfile(
         id="candidate-example",
         target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
     )
@@ -35,7 +44,10 @@ def _discover(postings: tuple[JobPosting, ...]) -> DiscoveryResult:
         location="Brasil",
         limit=10,
     )
-    return OpportunityDiscovery(source=StubJobSource(postings)).discover(profile, criteria)
+    return OpportunityDiscovery(source=StubJobSource(postings)).discover(
+        candidate_profile,
+        criteria,
+    )
 
 
 def test_discover_normaliza_um_job_posting_e_o_inclui_na_shortlist() -> None:
@@ -401,6 +413,557 @@ def test_discover_mantem_ids_representantes_e_ordem_ao_permutar_postings() -> No
     assert direct_result.opportunities == reversed_result.opportunities
     assert direct_result.opportunities[0].postings == (alpha_posting, beta_posting)
     assert direct_result.shortlist == reversed_result.shortlist
+
+
+def test_discover_expoe_match_assessment_versionado_com_quatro_dimensoes() -> None:
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+
+    result = _discover((posting,))
+
+    assert len(result.match_assessments) == 1
+    assessment = result.match_assessments[0]
+    assert assessment.opportunity_id == "synthetic:job-001"
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+        assessment.fit_score.policy_version,
+    ) == (40, 40, "match-v1")
+    assert tuple(
+        (
+            breakdown.dimension.value,
+            breakdown.weight,
+            breakdown.awarded_points,
+            breakdown.covered_weight,
+        )
+        for breakdown in assessment.fit_score.breakdown
+    ) == (
+        ("job-category", 40, 40, 40),
+        ("skills", 25, 0, 0),
+        ("entry-program-seniority", 20, 0, 0),
+        ("location-workplace-mode", 15, 0, 0),
+    )
+    assert len(assessment.requirement_assessments) == 1
+    category_assessment = assessment.requirement_assessments[0]
+    assert (
+        category_assessment.requirement.subject.kind.value,
+        category_assessment.requirement.subject.value,
+        category_assessment.status.value,
+        category_assessment.maximum_points,
+        category_assessment.awarded_points,
+        category_assessment.covered_points,
+    ) == ("job-category", "software-development", "met", 40, 40, 40)
+    assert tuple(
+        (
+            evidence.assertion.value,
+            evidence.provenance.origin,
+            evidence.provenance.locator,
+        )
+        for evidence in category_assessment.evidence
+    ) == (("supports", "candidate-profile", "target_categories"),)
+    assert assessment.strengths == (category_assessment,)
+    assert assessment.skill_gaps == ()
+    assert assessment.unknown_requirements == ()
+
+
+def test_discover_classifica_skill_sustentada_como_met() -> None:
+    python_evidence = Evidence(
+        id="project-api-python",
+        subject=RequirementSubject(
+            kind=RequirementKind.SKILL,
+            value="python",
+        ),
+        statement="Projeto de API desenvolvido em Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="projects/api-python",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(python_evidence,),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimento em Python.",
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (65, 65)
+    skills_breakdown = assessment.fit_score.breakdown[1]
+    assert (
+        skills_breakdown.dimension.value,
+        skills_breakdown.weight,
+        skills_breakdown.awarded_points,
+        skills_breakdown.covered_weight,
+    ) == ("skills", 25, 25, 25)
+    skill_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SKILL
+    )
+    assert (
+        skill_assessment.requirement.subject.value,
+        skill_assessment.status.value,
+        skill_assessment.maximum_points,
+        skill_assessment.awarded_points,
+        skill_assessment.covered_points,
+    ) == ("python", "met", 25, 25, 25)
+    assert skill_assessment.evidence == (python_evidence,)
+    assert skill_assessment.requirement.provenance == (
+        Provenance(origin="synthetic", locator="job-001#summary"),
+    )
+    assert tuple(
+        item.requirement.subject.kind.value for item in assessment.strengths
+    ) == ("job-category", "skill")
+    assert assessment.skill_gaps == ()
+    assert assessment.unknown_requirements == ()
+
+
+def test_discover_classifica_skill_contradita_como_unmet() -> None:
+    sql_evidence = Evidence(
+        id="self-assessment-sql",
+        subject=RequirementSubject(
+            kind=RequirementKind.SKILL,
+            value="sql",
+        ),
+        statement="Candidate ainda não possui conhecimento de SQL.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="self-assessment/sql",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(sql_evidence,),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimento em SQL.",
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 65)
+    skills_breakdown = assessment.fit_score.breakdown[1]
+    assert (
+        skills_breakdown.awarded_points,
+        skills_breakdown.covered_weight,
+    ) == (0, 25)
+    assert len(assessment.skill_gaps) == 1
+    skill_gap = assessment.skill_gaps[0]
+    assert skill_gap.requirement.subject.value == "sql"
+    assert skill_gap.evidence == (sql_evidence,)
+    assert tuple(
+        item.requirement.subject.kind.value for item in assessment.strengths
+    ) == ("job-category",)
+    assert assessment.unknown_requirements == ()
+
+
+def test_discover_classifica_skill_sem_evidence_como_unknown() -> None:
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimento em Docker.",
+    )
+
+    assessment = _discover((posting,)).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 40)
+    skills_breakdown = assessment.fit_score.breakdown[1]
+    assert (
+        skills_breakdown.awarded_points,
+        skills_breakdown.covered_weight,
+    ) == (0, 0)
+    assert assessment.skill_gaps == ()
+    assert len(assessment.unknown_requirements) == 1
+    unknown = assessment.unknown_requirements[0]
+    assert (
+        unknown.requirement.subject.value,
+        unknown.status.value,
+        unknown.evidence,
+    ) == ("docker", "unknown", ())
+
+
+def test_discover_classifica_evidence_ambigua_como_unknown() -> None:
+    supports_python = Evidence(
+        id="course-python",
+        subject=RequirementSubject(kind=RequirementKind.SKILL, value="python"),
+        statement="Curso introdutório de Python concluído.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="courses/python",
+        ),
+    )
+    contradicts_python = Evidence(
+        id="self-assessment-python",
+        subject=RequirementSubject(kind=RequirementKind.SKILL, value="python"),
+        statement="Candidate ainda não se considera apto em Python.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="self-assessment/python",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(contradicts_python, supports_python),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimento em Python.",
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 40)
+    unknown = assessment.unknown_requirements[0]
+    assert unknown.requirement.subject.value == "python"
+    assert unknown.status.value == "unknown"
+    assert unknown.evidence == (supports_python, contradicts_python)
+    assert tuple(
+        item.requirement.subject.kind.value for item in assessment.strengths
+    ) == ("job-category",)
+    assert assessment.skill_gaps == ()
+
+
+def test_discover_distribui_pontos_e_cobertura_entre_skills_explicitas() -> None:
+    python_evidence = Evidence(
+        id="project-python",
+        subject=RequirementSubject(kind=RequirementKind.SKILL, value="python"),
+        statement="Projeto desenvolvido em Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(origin="candidate-profile", locator="projects/python"),
+    )
+    sql_evidence = Evidence(
+        id="self-assessment-sql",
+        subject=RequirementSubject(kind=RequirementKind.SKILL, value="sql"),
+        statement="Candidate ainda não possui conhecimento de SQL.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="self-assessment/sql",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(sql_evidence, python_evidence),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimentos em Python, Docker e SQL.",
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (48, 56)
+    skills_breakdown = assessment.fit_score.breakdown[1]
+    assert (
+        skills_breakdown.weight,
+        skills_breakdown.awarded_points,
+        skills_breakdown.covered_weight,
+    ) == (25, 8, 16)
+    skill_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SKILL
+    )
+    assert tuple(
+        (
+            item.requirement.subject.value,
+            item.status.value,
+            item.maximum_points,
+            item.awarded_points,
+            item.covered_points,
+        )
+        for item in skill_assessments
+    ) == (
+        ("docker", "unknown", 9, 0, 0),
+        ("python", "met", 8, 8, 8),
+        ("sql", "unmet", 8, 0, 8),
+    )
+    assert tuple(gap.requirement.subject.value for gap in assessment.skill_gaps) == (
+        "sql",
+    )
+    assert tuple(
+        item.requirement.subject.value for item in assessment.unknown_requirements
+    ) == ("docker",)
+
+
+def test_discover_avalia_seniority_explicitamente_sustentada() -> None:
+    junior_evidence = Evidence(
+        id="career-goal-junior",
+        subject=RequirementSubject(
+            kind=RequirementKind.SENIORITY,
+            value="junior",
+        ),
+        statement="Candidate busca posições de nível júnior.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="career-goals/seniority",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(junior_evidence,),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer Júnior",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (60, 60)
+    entry_breakdown = assessment.fit_score.breakdown[2]
+    assert (
+        entry_breakdown.dimension.value,
+        entry_breakdown.weight,
+        entry_breakdown.awarded_points,
+        entry_breakdown.covered_weight,
+    ) == ("entry-program-seniority", 20, 20, 20)
+    seniority_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SENIORITY
+    )
+    assert (
+        seniority_assessment.requirement.subject.value,
+        seniority_assessment.status.value,
+        seniority_assessment.evidence,
+    ) == ("junior", "met", (junior_evidence,))
+    assert tuple(
+        item.requirement.subject.kind.value for item in assessment.strengths
+    ) == ("job-category", "seniority")
+
+
+def test_discover_avalia_localizacao_e_workplace_mode_sustentados() -> None:
+    location_evidence = Evidence(
+        id="accepted-location-sao-paulo",
+        subject=RequirementSubject(
+            kind=RequirementKind.LOCATION,
+            value="são paulo, sp",
+        ),
+        statement="Candidate aceita oportunidades em São Paulo, SP.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="accepted-locations/sao-paulo",
+        ),
+    )
+    hybrid_evidence = Evidence(
+        id="accepted-mode-hybrid",
+        subject=RequirementSubject(
+            kind=RequirementKind.WORKPLACE_MODE,
+            value="hybrid",
+        ),
+        statement="Candidate aceita trabalho híbrido.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="accepted-workplace-modes/hybrid",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(hybrid_evidence, location_evidence),
+    )
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location="São Paulo, SP",
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Modelo híbrido.",
+    )
+
+    assessment = _discover((posting,), profile=profile).match_assessments[0]
+
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (55, 55)
+    location_breakdown = assessment.fit_score.breakdown[3]
+    assert (
+        location_breakdown.dimension.value,
+        location_breakdown.weight,
+        location_breakdown.awarded_points,
+        location_breakdown.covered_weight,
+    ) == ("location-workplace-mode", 15, 15, 15)
+    location_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.dimension.value == "location-workplace-mode"
+    )
+    assert tuple(
+        (
+            item.requirement.subject.kind.value,
+            item.requirement.subject.value,
+            item.status.value,
+            item.maximum_points,
+        )
+        for item in location_assessments
+    ) == (
+        ("location", "são paulo, sp", "met", 8),
+        ("workplace-mode", "hybrid", "met", 7),
+    )
+    assert tuple(item.evidence for item in location_assessments) == (
+        (location_evidence,),
+        (hybrid_evidence,),
+    )
+    assert tuple(
+        item.requirement.subject.kind.value for item in assessment.strengths
+    ) == ("job-category", "location", "workplace-mode")
+
+
+def test_discover_produz_match_assessments_deterministicos() -> None:
+    python_evidence = Evidence(
+        id="project-python",
+        subject=RequirementSubject(kind=RequirementKind.SKILL, value="python"),
+        statement="Projeto desenvolvido em Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(origin="candidate-profile", locator="projects/python"),
+    )
+    junior_evidence = Evidence(
+        id="career-goal-junior",
+        subject=RequirementSubject(kind=RequirementKind.SENIORITY, value="junior"),
+        statement="Candidate busca posições de nível júnior.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="career-goals/seniority",
+        ),
+    )
+    alpha_posting = JobPosting(
+        source_name="alpha",
+        external_id="a-001",
+        title="Software Engineer Júnior",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://alpha.example.invalid/a-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Conhecimento em Python.",
+    )
+    zeta_posting = JobPosting(
+        source_name="zeta",
+        external_id="z-001",
+        title="QA Júnior",
+        company="Zeta Labs",
+        location=None,
+        source_url="https://zeta.example.invalid/z-001",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+    )
+    direct_profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(
+            JobCategory.SOFTWARE_DEVELOPMENT,
+            JobCategory.QUALITY_ASSURANCE,
+        ),
+        evidence=(python_evidence, junior_evidence),
+    )
+    reversed_profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(
+            JobCategory.QUALITY_ASSURANCE,
+            JobCategory.SOFTWARE_DEVELOPMENT,
+        ),
+        evidence=(junior_evidence, python_evidence),
+    )
+
+    direct_result = _discover(
+        (zeta_posting, alpha_posting),
+        profile=direct_profile,
+    )
+    reversed_result = _discover(
+        (alpha_posting, zeta_posting),
+        profile=reversed_profile,
+    )
+
+    assert direct_result.match_assessments == reversed_result.match_assessments
+    assert tuple(
+        (
+            assessment.opportunity_id,
+            assessment.fit_score.value,
+            assessment.fit_score.evidence_coverage,
+            assessment.fit_score.policy_version,
+        )
+        for assessment in direct_result.match_assessments
+    ) == (
+        ("alpha:a-001", 85, 85, "match-v1"),
+        ("zeta:z-001", 60, 60, "match-v1"),
+    )
 
 
 def test_discover_rejeita_categoria_que_nao_pertence_ao_candidate_profile() -> None:

@@ -62,6 +62,10 @@ _Avoid_: Search, Scrape
 Uma condição declarada ou inferida de uma Opportunity, classificada conforme sua importância para a candidatura.
 _Avoid_: Skill, Keyword
 
+**RequirementKind**:
+A natureza específica do assunto de um Requirement, como JobCategory, skill, EntryProgram, Seniority, localização ou WorkplaceMode.
+_Avoid_: FitDimension, RequirementImportance, RequirementStatus
+
 **RequirementImportance**:
 A classificação de um Requirement como impeditivo, preferencial ou incerto, baseada no texto da Opportunity e preservando a evidência dessa classificação.
 _Avoid_: MandatoryFlag, Weight
