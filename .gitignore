@@ -1,0 +1,28 @@
+# Local agent configuration
+/.agents/
+/skills-lock.json
+/AGENTS.md
+/AGENTS.override.md
+/CLAUDE.md
+/docs/agents/
+
+# Python environments, build outputs, and caches
+/.venv/
+/.tools/
+__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/build/
+/dist/
+*.egg-info/
+
+# Local secrets and candidate data
+.env
+.env.*
+!.env.example
+/.data/
+*.db
+*.sqlite
+*.sqlite3
