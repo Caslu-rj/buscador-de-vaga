@@ -149,6 +149,7 @@ class Requirement:
     dimension: FitDimension
     importance: RequirementImportance
     provenance: tuple[Provenance, ...]
+    is_resolved: bool = True
 
 
 @dataclass(frozen=True, slots=True)

@@ -106,6 +106,7 @@ _CATEGORY_SEARCH_TERMS: dict[JobCategory, str] = {
     JobCategory.QUALITY_ASSURANCE: "qualidade de software QA",
     JobCategory.DATA: "analista de dados",
 }
+_JOB_CATEGORIES_BY_VALUE = {category.value: category for category in JobCategory}
 
 _CATEGORY_TITLE_ALIASES: dict[JobCategory, tuple[str, ...]] = {
     JobCategory.SOFTWARE_DEVELOPMENT: (
@@ -201,6 +202,44 @@ type _ExternalIdentity = tuple[Literal["external-id"], str, str]
 type _CanonicalUrlIdentity = tuple[Literal["canonical-url"], str]
 type _StrongIdentity = _ExternalIdentity | _CanonicalUrlIdentity
 type _CompleteFieldsIdentity = tuple[str, str, str]
+
+
+class _RequirementSignals:
+    """Acumula subjects detectados sem apagar conflitos entre fontes."""
+
+    def __init__(self) -> None:
+        self._provenance_by_subject: dict[
+            RequirementSubject, set[Provenance]
+        ] = {}
+        self._values_by_kind: dict[RequirementKind, set[str]] = {}
+
+    def record(self, subject: RequirementSubject, provenance: Provenance) -> None:
+        self._values_by_kind.setdefault(subject.kind, set()).add(subject.value)
+        self._provenance_by_subject.setdefault(subject, set()).add(provenance)
+
+    def to_requirements(self, dimension: FitDimension) -> tuple[Requirement, ...]:
+        return tuple(
+            Requirement(
+                id=f"{subject.kind.value}:{subject.value}",
+                subject=subject,
+                statement=(
+                    f"A Opportunity declara {subject.kind.value} {subject.value}."
+                ),
+                dimension=dimension,
+                importance=RequirementImportance.UNKNOWN,
+                provenance=tuple(
+                    sorted(
+                        self._provenance_by_subject[subject],
+                        key=_provenance_sort_key,
+                    )
+                ),
+                is_resolved=len(self._values_by_kind[subject.kind]) == 1,
+            )
+            for subject in sorted(
+                self._provenance_by_subject,
+                key=lambda item: (item.kind.value, item.value),
+            )
+        )
 
 
 class OpportunityDiscovery:
@@ -299,24 +338,45 @@ def _assess_opportunity(
 
 
 def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
-    matches: set[JobCategory] = set()
-    provenance: set[Provenance] = set()
+    provenance_by_category: dict[JobCategory, set[Provenance]] = {}
     for posting in opportunity.postings:
-        posting_categories = _categories_in_title(posting.title)
-        matches.update(posting_categories)
-        if posting_categories:
-            provenance.add(
+        for category in _categories_in_title(posting.title):
+            provenance_by_category.setdefault(category, set()).add(
                 Provenance(
                     origin=posting.source_name,
                     locator=f"{posting.external_id}#title",
                 )
             )
 
-    if len(matches) != 1:
-        return ()
+    if not provenance_by_category:
+        return (
+            Requirement(
+                id="job-category:unknown",
+                subject=RequirementSubject(
+                    kind=RequirementKind.JOB_CATEGORY,
+                    value="unknown",
+                ),
+                statement="A JobCategory da Opportunity não pôde ser identificada.",
+                dimension=FitDimension.JOB_CATEGORY,
+                importance=RequirementImportance.UNKNOWN,
+                provenance=tuple(
+                    sorted(
+                        (
+                            Provenance(
+                                origin=posting.source_name,
+                                locator=f"{posting.external_id}#title",
+                            )
+                            for posting in opportunity.postings
+                        ),
+                        key=_provenance_sort_key,
+                    )
+                ),
+                is_resolved=False,
+            ),
+        )
 
-    category = matches.pop()
-    return (
+    is_resolved = len(provenance_by_category) == 1
+    return tuple(
         Requirement(
             id=f"job-category:{category.value}",
             subject=RequirementSubject(
@@ -326,8 +386,12 @@ def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
             statement=f"A Opportunity pertence à JobCategory {category.value}.",
             dimension=FitDimension.JOB_CATEGORY,
             importance=RequirementImportance.UNKNOWN,
-            provenance=tuple(sorted(provenance, key=_provenance_sort_key)),
-        ),
+            provenance=tuple(
+                sorted(provenance_by_category[category], key=_provenance_sort_key)
+            ),
+            is_resolved=is_resolved,
+        )
+        for category in sorted(provenance_by_category, key=lambda item: item.value)
     )
 
 
@@ -342,9 +406,9 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                 )
             )
 
-        if posting.summary is None or not _has_skill_context(posting.summary):
+        if posting.summary is None:
             continue
-        for skill in _skills_in_text(posting.summary):
+        for skill in _skills_in_explicit_context(posting.summary):
             provenance_by_skill.setdefault(skill, set()).add(
                 Provenance(
                     origin=posting.source_name,
@@ -379,45 +443,31 @@ def _skills_in_text(value: str) -> set[str]:
     }
 
 
-def _has_skill_context(summary: str) -> bool:
-    normalized = _comparison_text(summary) or ""
-    return any(_contains_term(normalized, term) for term in _SKILL_CONTEXT_TERMS)
+def _skills_in_explicit_context(summary: str) -> set[str]:
+    skills: set[str] = set()
+    for clause in re.split(r"[.!?;\r\n]+", summary):
+        normalized_clause = _comparison_text(clause) or ""
+        if any(
+            _contains_term(normalized_clause, term)
+            for term in _SKILL_CONTEXT_TERMS
+        ):
+            skills.update(_skills_in_text(clause))
+    return skills
 
 
 def _entry_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
-    provenance_by_subject: dict[RequirementSubject, set[Provenance]] = {}
-    values_by_kind: dict[RequirementKind, set[str]] = {}
+    signals = _RequirementSignals()
     for posting in opportunity.postings:
         for subject in _entry_subjects_in_title(posting.title):
-            values_by_kind.setdefault(subject.kind, set()).add(subject.value)
-            provenance_by_subject.setdefault(subject, set()).add(
+            signals.record(
+                subject,
                 Provenance(
                     origin=posting.source_name,
                     locator=f"{posting.external_id}#title",
-                )
+                ),
             )
 
-    unambiguous_subjects = tuple(
-        subject
-        for subject in provenance_by_subject
-        if len(values_by_kind[subject.kind]) == 1
-    )
-    return tuple(
-        Requirement(
-            id=f"{subject.kind.value}:{subject.value}",
-            subject=subject,
-            statement=f"A Opportunity declara {subject.kind.value} {subject.value}.",
-            dimension=FitDimension.ENTRY_PROGRAM_SENIORITY,
-            importance=RequirementImportance.UNKNOWN,
-            provenance=tuple(
-                sorted(provenance_by_subject[subject], key=_provenance_sort_key)
-            ),
-        )
-        for subject in sorted(
-            unambiguous_subjects,
-            key=lambda subject: (subject.kind.value, subject.value),
-        )
-    )
+    return signals.to_requirements(FitDimension.ENTRY_PROGRAM_SENIORITY)
 
 
 def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
@@ -436,86 +486,49 @@ def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
 
 
 def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
-    provenance_by_subject: dict[RequirementSubject, set[Provenance]] = {}
-    values_by_kind: dict[RequirementKind, set[str]] = {}
+    signals = _RequirementSignals()
     for posting in opportunity.postings:
         if posting.location is not None:
+            workplace_modes = _workplace_modes_in_text(posting.location)
             normalized_location = _comparison_text(posting.location)
-            if normalized_location is not None:
+            if normalized_location is not None and not workplace_modes:
                 location_subject = RequirementSubject(
                     kind=RequirementKind.LOCATION,
                     value=normalized_location,
                 )
-                values_by_kind.setdefault(RequirementKind.LOCATION, set()).add(
-                    normalized_location
-                )
-                provenance_by_subject.setdefault(location_subject, set()).add(
+                signals.record(
+                    location_subject,
                     Provenance(
                         origin=posting.source_name,
                         locator=f"{posting.external_id}#location",
-                    )
+                    ),
                 )
-            for mode in _workplace_modes_in_text(posting.location):
-                _record_workplace_mode(
-                    mode,
-                    posting,
-                    field="location",
-                    values_by_kind=values_by_kind,
-                    provenance_by_subject=provenance_by_subject,
+            for mode in workplace_modes:
+                signals.record(
+                    RequirementSubject(
+                        kind=RequirementKind.WORKPLACE_MODE,
+                        value=mode,
+                    ),
+                    Provenance(
+                        origin=posting.source_name,
+                        locator=f"{posting.external_id}#location",
+                    ),
                 )
 
         if posting.summary is not None and _has_workplace_context(posting.summary):
             for mode in _workplace_modes_in_text(posting.summary):
-                _record_workplace_mode(
-                    mode,
-                    posting,
-                    field="summary",
-                    values_by_kind=values_by_kind,
-                    provenance_by_subject=provenance_by_subject,
+                signals.record(
+                    RequirementSubject(
+                        kind=RequirementKind.WORKPLACE_MODE,
+                        value=mode,
+                    ),
+                    Provenance(
+                        origin=posting.source_name,
+                        locator=f"{posting.external_id}#summary",
+                    ),
                 )
 
-    unambiguous_subjects = tuple(
-        subject
-        for subject in provenance_by_subject
-        if len(values_by_kind[subject.kind]) == 1
-    )
-    return tuple(
-        Requirement(
-            id=f"{subject.kind.value}:{subject.value}",
-            subject=subject,
-            statement=f"A Opportunity declara {subject.kind.value} {subject.value}.",
-            dimension=FitDimension.LOCATION_WORKPLACE_MODE,
-            importance=RequirementImportance.UNKNOWN,
-            provenance=tuple(
-                sorted(provenance_by_subject[subject], key=_provenance_sort_key)
-            ),
-        )
-        for subject in sorted(
-            unambiguous_subjects,
-            key=lambda subject: (subject.kind.value, subject.value),
-        )
-    )
-
-
-def _record_workplace_mode(
-    mode: str,
-    posting: JobPosting,
-    *,
-    field: str,
-    values_by_kind: dict[RequirementKind, set[str]],
-    provenance_by_subject: dict[RequirementSubject, set[Provenance]],
-) -> None:
-    subject = RequirementSubject(
-        kind=RequirementKind.WORKPLACE_MODE,
-        value=mode,
-    )
-    values_by_kind.setdefault(RequirementKind.WORKPLACE_MODE, set()).add(mode)
-    provenance_by_subject.setdefault(subject, set()).add(
-        Provenance(
-            origin=posting.source_name,
-            locator=f"{posting.external_id}#{field}",
-        )
-    )
+    return signals.to_requirements(FitDimension.LOCATION_WORKPLACE_MODE)
 
 
 def _workplace_modes_in_text(value: str) -> set[str]:
@@ -562,7 +575,9 @@ def _assess_requirement(
         )
     )
     assertions = {item.assertion for item in evidence}
-    if assertions == {EvidenceAssertion.SUPPORTS}:
+    if not requirement.is_resolved:
+        status = RequirementStatus.UNKNOWN
+    elif assertions == {EvidenceAssertion.SUPPORTS}:
         status = RequirementStatus.MET
     elif assertions == {EvidenceAssertion.CONTRADICTS}:
         status = RequirementStatus.UNMET
@@ -601,22 +616,18 @@ def _derived_category_evidence(
     if requirement.subject.kind is not RequirementKind.JOB_CATEGORY:
         return ()
 
-    category = JobCategory(requirement.subject.value)
-    supports = category in profile.target_categories
+    category = _JOB_CATEGORIES_BY_VALUE.get(requirement.subject.value)
+    if category is None:
+        return ()
+    if category not in profile.target_categories:
+        return ()
+
     return (
         Evidence(
             id=f"candidate-profile:target-category:{category.value}",
             subject=requirement.subject,
-            statement=(
-                f"CandidateProfile declara {category.value} em target_categories."
-                if supports
-                else f"CandidateProfile não declara {category.value} em target_categories."
-            ),
-            assertion=(
-                EvidenceAssertion.SUPPORTS
-                if supports
-                else EvidenceAssertion.CONTRADICTS
-            ),
+            statement=f"CandidateProfile declara {category.value} em target_categories.",
+            assertion=EvidenceAssertion.SUPPORTS,
             provenance=Provenance(
                 origin="candidate-profile",
                 locator="target_categories",

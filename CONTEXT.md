@@ -59,7 +59,7 @@ Uma execução delimitada de busca, com SearchCriteria, fontes consultadas, inst
 _Avoid_: Search, Scrape
 
 **Requirement**:
-Uma condição declarada ou inferida de uma Opportunity, classificada conforme sua importância para a candidatura.
+Uma condição declarada ou inferida de uma Opportunity, classificada conforme sua importância para a candidatura. Sinais conflitantes do mesmo tipo são preservados como Requirements não resolvidos e avaliados como `unknown`; uma JobCategory não identificável também permanece explícita dessa forma.
 _Avoid_: Skill, Keyword
 
 **RequirementKind**:
