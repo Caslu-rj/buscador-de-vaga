@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "candidate-example",
+  "target_categories": [
+    "software-development",
+    "quality-assurance"
+  ]
+}

@@ -13,13 +13,15 @@ CLI Adapter
     |
     v
 OpportunityDiscovery.discover(CandidateProfile, SearchCriteria)
+    |-- planejamento da consulta
     |-- normalização
     |-- deduplicação conservadora
     |-- MatchAssessment determinístico
     |-- elegibilidade + ranking
     |
-    +--> JobSource.search(SearchCriteria)
+    +--> JobSource.search(JobSourceQuery)
              |-- JoobleJobSource (produção)
+             |-- SyntheticJobSource (tracer offline)
              `-- StubJobSource (testes)
 ```
 
@@ -40,7 +42,7 @@ O primeiro corte é síncrono. Uma futura UI web poderá executar o Module em wo
 
 ### JobSource
 
-`JobSource` é a Interface no Seam de sistemas externos verdadeiros. Cada Adapter traduz autenticação, paginação, payloads e erros da fonte para JobPostings e falhas tipadas. O domínio não conhece HTTP, chaves, schemas externos nem nomes específicos do Jooble.
+`JobSource` é a Interface no Seam de sistemas externos verdadeiros. `OpportunityDiscovery` converte SearchCriteria em uma JobSourceQuery pequena, composta por keywords, localização e limite; assim, o Adapter não precisa conhecer CandidateProfile, JobCategory nem política de matching. Cada Adapter traduz autenticação, paginação, payloads e erros da fonte para JobPostings e falhas tipadas. O domínio não conhece HTTP, chaves, schemas externos nem nomes específicos do Jooble. O SyntheticJobSource é somente um harness offline: sua fixture declara a consulta que representa e é rejeitada quando os argumentos da execução não correspondem.
 
 O primeiro Adapter será `JoobleJobSource`, baseado na REST API oficial brasileira. A chave regional vem de `JOOBLE_API_KEY`; ela nunca aparece em argumentos, logs, fixtures, erros ou arquivos versionados. Testes usam HTTPX MockTransport e payload sintético; o smoke test live é manual e limitado.
 
@@ -94,6 +96,7 @@ src/buscador_de_vaga/
 ├── profile.py
 └── sources/
     ├── __init__.py
+    ├── synthetic.py
     └── jooble.py
 tests/
 ├── fixtures/
