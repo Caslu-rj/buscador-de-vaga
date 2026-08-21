@@ -9,6 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    EntryProgram,
     Evidence,
     EvidenceAssertion,
     FitBreakdown,
@@ -27,7 +28,9 @@ from buscador_de_vaga.domain import (
     RequirementStatus,
     RequirementSubject,
     SearchCriteria,
+    Seniority,
     Shortlist,
+    WorkplaceMode,
 )
 
 
@@ -106,7 +109,6 @@ _CATEGORY_SEARCH_TERMS: dict[JobCategory, str] = {
     JobCategory.QUALITY_ASSURANCE: "qualidade de software QA",
     JobCategory.DATA: "analista de dados",
 }
-_JOB_CATEGORIES_BY_VALUE = {category.value: category for category in JobCategory}
 
 _CATEGORY_TITLE_ALIASES: dict[JobCategory, tuple[str, ...]] = {
     JobCategory.SOFTWARE_DEVELOPMENT: (
@@ -164,22 +166,35 @@ _SKILL_CONTEXT_TERMS = (
     "tecnologias",
 )
 
-_ENTRY_PROGRAM_ALIASES: dict[str, tuple[str, ...]] = {
-    "apprenticeship": ("aprendiz",),
-    "internship": ("estagiário", "estagiaria", "estagiária", "estagio", "estágio", "intern"),
-    "trainee": ("trainee",),
+_ENTRY_PROGRAM_ALIASES: dict[EntryProgram, tuple[str, ...]] = {
+    EntryProgram.APPRENTICESHIP: ("aprendiz",),
+    EntryProgram.INTERNSHIP: (
+        "estagiário",
+        "estagiaria",
+        "estagiária",
+        "estagio",
+        "estágio",
+        "intern",
+    ),
+    EntryProgram.TRAINEE: ("trainee",),
 }
 
-_SENIORITY_ALIASES: dict[str, tuple[str, ...]] = {
-    "junior": ("jr", "junior", "júnior"),
-    "mid-level": ("mid-level", "pleno"),
-    "senior": ("senior", "sênior"),
+_SENIORITY_ALIASES: dict[Seniority, tuple[str, ...]] = {
+    Seniority.JUNIOR: ("jr", "junior", "júnior"),
+    Seniority.MID_LEVEL: ("mid-level", "pleno"),
+    Seniority.SENIOR: ("senior", "sênior"),
 }
 
-_WORKPLACE_MODE_ALIASES: dict[str, tuple[str, ...]] = {
-    "hybrid": ("hibrida", "hibrido", "híbrida", "híbrido", "hybrid"),
-    "onsite": ("on-site", "onsite", "presencial"),
-    "remote": ("home office", "remote", "remota", "remoto"),
+_WORKPLACE_MODE_ALIASES: dict[WorkplaceMode, tuple[str, ...]] = {
+    WorkplaceMode.HYBRID: (
+        "hibrida",
+        "hibrido",
+        "híbrida",
+        "híbrido",
+        "hybrid",
+    ),
+    WorkplaceMode.ONSITE: ("on-site", "onsite", "presencial"),
+    WorkplaceMode.REMOTE: ("home office", "remote", "remota", "remoto"),
 }
 
 _WORKPLACE_CONTEXT_TERMS = (
@@ -214,16 +229,19 @@ class _RequirementSignals:
         self._values_by_kind: dict[RequirementKind, set[str]] = {}
 
     def record(self, subject: RequirementSubject, provenance: Provenance) -> None:
-        self._values_by_kind.setdefault(subject.kind, set()).add(subject.value)
+        self._values_by_kind.setdefault(subject.kind, set()).add(
+            subject.resolved_value
+        )
         self._provenance_by_subject.setdefault(subject, set()).add(provenance)
 
     def to_requirements(self, dimension: FitDimension) -> tuple[Requirement, ...]:
         return tuple(
             Requirement(
-                id=f"{subject.kind.value}:{subject.value}",
+                id=f"{subject.kind.value}:{subject.resolved_value}",
                 subject=subject,
                 statement=(
-                    f"A Opportunity declara {subject.kind.value} {subject.value}."
+                    "A Opportunity declara "
+                    f"{subject.kind.value} {subject.resolved_value}."
                 ),
                 dimension=dimension,
                 importance=RequirementImportance.UNKNOWN,
@@ -237,7 +255,7 @@ class _RequirementSignals:
             )
             for subject in sorted(
                 self._provenance_by_subject,
-                key=lambda item: (item.kind.value, item.value),
+                key=lambda item: (item.kind.value, item.resolved_value),
             )
         )
 
@@ -352,10 +370,7 @@ def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
         return (
             Requirement(
                 id="job-category:unknown",
-                subject=RequirementSubject(
-                    kind=RequirementKind.JOB_CATEGORY,
-                    value="unknown",
-                ),
+                subject=RequirementSubject.job_category(None),
                 statement="A JobCategory da Opportunity não pôde ser identificada.",
                 dimension=FitDimension.JOB_CATEGORY,
                 importance=RequirementImportance.UNKNOWN,
@@ -379,10 +394,7 @@ def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     return tuple(
         Requirement(
             id=f"job-category:{category.value}",
-            subject=RequirementSubject(
-                kind=RequirementKind.JOB_CATEGORY,
-                value=category.value,
-            ),
+            subject=RequirementSubject.job_category(category),
             statement=f"A Opportunity pertence à JobCategory {category.value}.",
             dimension=FitDimension.JOB_CATEGORY,
             importance=RequirementImportance.UNKNOWN,
@@ -419,10 +431,7 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     return tuple(
         Requirement(
             id=f"skill:{skill}",
-            subject=RequirementSubject(
-                kind=RequirementKind.SKILL,
-                value=skill,
-            ),
+            subject=RequirementSubject.skill(skill),
             statement=f"A Opportunity menciona explicitamente a skill {skill}.",
             dimension=FitDimension.SKILLS,
             importance=RequirementImportance.UNKNOWN,
@@ -473,12 +482,12 @@ def _entry_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
 def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
     normalized = _comparison_text(title) or ""
     subjects = {
-        RequirementSubject(kind=RequirementKind.ENTRY_PROGRAM, value=value)
+        RequirementSubject.entry_program(value)
         for value, aliases in _ENTRY_PROGRAM_ALIASES.items()
         if any(_contains_term(normalized, alias) for alias in aliases)
     }
     subjects.update(
-        RequirementSubject(kind=RequirementKind.SENIORITY, value=value)
+        RequirementSubject.seniority(value)
         for value, aliases in _SENIORITY_ALIASES.items()
         if any(_contains_term(normalized, alias) for alias in aliases)
     )
@@ -492,10 +501,7 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
             workplace_modes = _workplace_modes_in_text(posting.location)
             normalized_location = _comparison_text(posting.location)
             if normalized_location is not None and not workplace_modes:
-                location_subject = RequirementSubject(
-                    kind=RequirementKind.LOCATION,
-                    value=normalized_location,
-                )
+                location_subject = RequirementSubject.location(normalized_location)
                 signals.record(
                     location_subject,
                     Provenance(
@@ -505,10 +511,7 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                 )
             for mode in workplace_modes:
                 signals.record(
-                    RequirementSubject(
-                        kind=RequirementKind.WORKPLACE_MODE,
-                        value=mode,
-                    ),
+                    RequirementSubject.workplace_mode(mode),
                     Provenance(
                         origin=posting.source_name,
                         locator=f"{posting.external_id}#location",
@@ -518,10 +521,7 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
         if posting.summary is not None and _has_workplace_context(posting.summary):
             for mode in _workplace_modes_in_text(posting.summary):
                 signals.record(
-                    RequirementSubject(
-                        kind=RequirementKind.WORKPLACE_MODE,
-                        value=mode,
-                    ),
+                    RequirementSubject.workplace_mode(mode),
                     Provenance(
                         origin=posting.source_name,
                         locator=f"{posting.external_id}#summary",
@@ -531,7 +531,7 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     return signals.to_requirements(FitDimension.LOCATION_WORKPLACE_MODE)
 
 
-def _workplace_modes_in_text(value: str) -> set[str]:
+def _workplace_modes_in_text(value: str) -> set[WorkplaceMode]:
     normalized = _comparison_text(value) or ""
     return {
         mode
@@ -616,9 +616,10 @@ def _derived_category_evidence(
     if requirement.subject.kind is not RequirementKind.JOB_CATEGORY:
         return ()
 
-    category = _JOB_CATEGORIES_BY_VALUE.get(requirement.subject.value)
-    if category is None:
+    subject_value = requirement.subject.value
+    if not isinstance(subject_value, JobCategory):
         return ()
+    category = subject_value
     if category not in profile.target_categories:
         return ()
 
@@ -659,7 +660,7 @@ def _requirement_sort_key(requirement: Requirement) -> tuple[int, str, str]:
     return (
         dimension_order[requirement.dimension],
         requirement.subject.kind.value,
-        requirement.subject.value,
+        requirement.subject.value or "",
     )
 
 

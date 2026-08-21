@@ -460,6 +460,10 @@ def test_discover_expoe_match_assessment_versionado_com_quatro_dimensoes() -> No
         category_assessment.awarded_points,
         category_assessment.covered_points,
     ) == ("job-category", "software-development", "met", 40, 40, 40)
+    assert (
+        category_assessment.requirement.subject.value
+        is JobCategory.SOFTWARE_DEVELOPMENT
+    )
     assert tuple(
         (
             evidence.assertion.value,
@@ -598,7 +602,7 @@ def test_discover_explicita_job_category_nao_identificada_como_unknown() -> None
         category_assessment.covered_points,
     ) == (
         "job-category",
-        "unknown",
+        None,
         False,
         "A JobCategory da Opportunity não pôde ser identificada.",
         "unknown",

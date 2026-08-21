@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Self
 
 
 class JobCategory(StrEnum):
@@ -13,6 +14,35 @@ class JobCategory(StrEnum):
     SYSTEMS = "systems"
     QUALITY_ASSURANCE = "quality-assurance"
     DATA = "data"
+
+
+class EntryProgram(StrEnum):
+    """Programas de entrada reconhecidos pela política inicial."""
+
+    APPRENTICESHIP = "apprenticeship"
+    INTERNSHIP = "internship"
+    TRAINEE = "trainee"
+
+
+class Seniority(StrEnum):
+    """Níveis de senioridade reconhecidos pela política inicial."""
+
+    JUNIOR = "junior"
+    MID_LEVEL = "mid-level"
+    SENIOR = "senior"
+
+
+class WorkplaceMode(StrEnum):
+    """Modalidades de trabalho reconhecidas pela política inicial."""
+
+    HYBRID = "hybrid"
+    ONSITE = "onsite"
+    REMOTE = "remote"
+
+
+type RequirementSubjectValue = (
+    JobCategory | EntryProgram | Seniority | WorkplaceMode | str
+)
 
 
 class EvidenceAssertion(StrEnum):
@@ -71,7 +101,66 @@ class RequirementSubject:
     """Identidade tipada e canônica compartilhada por Requirement e Evidence."""
 
     kind: RequirementKind
-    value: str
+    value: RequirementSubjectValue | None
+
+    def __post_init__(self) -> None:
+        if self.value is None:
+            return
+        if not self.value or self.value != self.value.strip():
+            raise ValueError("RequirementSubject requer value canônico não vazio")
+        try:
+            if self.kind is RequirementKind.JOB_CATEGORY:
+                typed_value: RequirementSubjectValue = JobCategory(self.value)
+            elif self.kind is RequirementKind.ENTRY_PROGRAM:
+                typed_value = EntryProgram(self.value)
+            elif self.kind is RequirementKind.SENIORITY:
+                typed_value = Seniority(self.value)
+            elif self.kind is RequirementKind.WORKPLACE_MODE:
+                typed_value = WorkplaceMode(self.value)
+            elif isinstance(self.value, StrEnum):
+                raise ValueError
+            else:
+                typed_value = self.value
+        except ValueError:
+            raise ValueError(
+                f"{self.value!r} não é válido para RequirementKind {self.kind.value}"
+            ) from None
+        object.__setattr__(self, "value", typed_value)
+
+    @classmethod
+    def job_category(cls, value: JobCategory | None) -> Self:
+        return cls(
+            kind=RequirementKind.JOB_CATEGORY,
+            value=value,
+        )
+
+    @classmethod
+    def skill(cls, value: str) -> Self:
+        return cls(kind=RequirementKind.SKILL, value=value)
+
+    @classmethod
+    def entry_program(cls, value: EntryProgram) -> Self:
+        return cls(kind=RequirementKind.ENTRY_PROGRAM, value=value)
+
+    @classmethod
+    def seniority(cls, value: Seniority) -> Self:
+        return cls(kind=RequirementKind.SENIORITY, value=value)
+
+    @classmethod
+    def location(cls, value: str) -> Self:
+        return cls(kind=RequirementKind.LOCATION, value=value)
+
+    @classmethod
+    def workplace_mode(cls, value: WorkplaceMode) -> Self:
+        return cls(kind=RequirementKind.WORKPLACE_MODE, value=value)
+
+    @property
+    def resolved_value(self) -> str:
+        if self.value is None:
+            raise ValueError("RequirementSubject não resolvido não possui value")
+        if isinstance(self.value, StrEnum):
+            return self.value.value
+        return self.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +172,10 @@ class Evidence:
     statement: str
     assertion: EvidenceAssertion
     provenance: Provenance
+
+    def __post_init__(self) -> None:
+        if self.subject.value is None:
+            raise ValueError("Evidence requer um RequirementSubject resolvido")
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +243,10 @@ class Requirement:
     importance: RequirementImportance
     provenance: tuple[Provenance, ...]
     is_resolved: bool = True
+
+    def __post_init__(self) -> None:
+        if self.is_resolved and self.subject.value is None:
+            raise ValueError("Requirement resolvido requer subject value")
 
 
 @dataclass(frozen=True, slots=True)
