@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.32,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "buscador-de-vaga"
+version = "0.1.0"
+description = "Descoberta local-first e explicável de vagas de tecnologia no Brasil."
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Caslu-rj" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=2.3,<3",
+  "pytest>=9.1,<10",
+  "ruff>=0.16.4,<0.17",
+]
+
+[project.scripts]
+buscar-vagas = "buscador_de_vaga.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/buscador_de_vaga"]
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]

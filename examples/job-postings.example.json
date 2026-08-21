@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "source_name": "synthetic",
+  "query": {
+    "keywords": "desenvolvedor de software",
+    "location": "Rio de Janeiro, RJ"
+  },
+  "postings": [
+    {
+      "external_id": "job-001",
+      "title": "Desenvolvedor(a) Python Júnior",
+      "company": "Empresa Exemplo",
+      "location": "Rio de Janeiro, RJ",
+      "source_url": "https://jobs.example.invalid/job-001",
+      "collected_at": "2026-08-21T12:00:00Z",
+      "source_updated_at": "2026-08-20T18:30:00-03:00",
+      "summary": "Publicação inteiramente fictícia para demonstrar o tracer bullet offline."
+    }
+  ]
+}
