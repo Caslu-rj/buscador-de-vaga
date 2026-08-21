@@ -166,6 +166,7 @@ def test_jooble_search_traduz_timeout_para_falha_temporaria_segura() -> None:
     unsafe_text = f"{error!r} {error.action}"
     assert API_KEY not in unsafe_text
     assert timeout_sentinel not in unsafe_text
+    assert error.__context__ is None
 
 
 def test_jooble_search_sanitiza_falha_de_transporte() -> None:
@@ -188,6 +189,7 @@ def test_jooble_search_sanitiza_falha_de_transporte() -> None:
     unsafe_text = f"{error!r} {error.action}"
     assert API_KEY not in unsafe_text
     assert transport_sentinel not in unsafe_text
+    assert error.__context__ is None
 
 
 def test_jooble_search_traduz_5xx_para_indisponibilidade_segura() -> None:
@@ -210,6 +212,7 @@ def test_jooble_search_traduz_5xx_para_indisponibilidade_segura() -> None:
     unsafe_text = f"{error!r} {error.action}"
     assert API_KEY not in unsafe_text
     assert raw_payload_sentinel not in unsafe_text
+    assert error.__context__ is None
 
 
 def test_jooble_search_traduz_outro_status_http_para_falha_de_contrato() -> None:
@@ -262,11 +265,14 @@ def test_jooble_search_rejeita_payload_incompativel_sem_expor_conteudo() -> None
     error = captured.value
     assert error.kind is JobSourceFailureKind.CONTRACT
     assert str(error) == "A resposta do Jooble não corresponde ao formato esperado."
-    assert error.action == "Tente novamente mais tarde e verifique se a integração foi atualizada."
+    assert error.action == (
+        "Verifique se a integração está atualizada e reporte uma possível mudança no contrato."
+    )
     assert error.retryable is False
     unsafe_text = f"{error!r} {error.action}"
     assert API_KEY not in unsafe_text
     assert raw_payload_sentinel not in unsafe_text
+    assert error.__context__ is None
 
 
 def test_jooble_search_retorna_tupla_vazia_quando_nao_ha_vagas() -> None:

@@ -10,6 +10,7 @@ from buscador_de_vaga.discovery import JobSourceError, JobSourceFailureKind
 from buscador_de_vaga.domain import JobPosting, JobSourceQuery
 
 _API_BASE_URL = "https://jooble.org/api"
+_RETRY_LATER_ACTION = "Tente novamente mais tarde; nenhuma repetição automática foi feita."
 
 
 def _utc_now() -> datetime:
@@ -34,34 +35,7 @@ class JoobleJobSource:
 
     def search(self, query: JobSourceQuery) -> tuple[JobPosting, ...]:
         """Consulta somente a primeira página da busca."""
-        try:
-            response = self._client.post(
-                f"{_API_BASE_URL}/{quote(self._api_key, safe='')}",
-                headers={"Accept": "application/json"},
-                follow_redirects=False,
-                json={
-                    "keywords": query.keywords,
-                    "location": query.location,
-                    "page": 1,
-                    "ResultOnPage": query.limit,
-                },
-            )
-        except httpx.TimeoutException:
-            raise JobSourceError(
-                "O Jooble não respondeu dentro do tempo limite.",
-                source_name=self.name,
-                kind=JobSourceFailureKind.TIMEOUT,
-                action="Tente novamente mais tarde; nenhuma repetição automática foi feita.",
-                retryable=True,
-            ) from None
-        except httpx.RequestError:
-            raise JobSourceError(
-                "Não foi possível conectar ao Jooble.",
-                source_name=self.name,
-                kind=JobSourceFailureKind.UNAVAILABLE,
-                action="Tente novamente mais tarde; nenhuma repetição automática foi feita.",
-                retryable=True,
-            ) from None
+        response = self._request(query)
         if response.status_code == 403:
             raise JobSourceError(
                 "A credencial do Jooble foi rejeitada.",
@@ -79,30 +53,60 @@ class JoobleJobSource:
                 retryable=True,
             )
         if response.status_code >= 500:
-            raise JobSourceError(
-                "O Jooble está temporariamente indisponível.",
-                source_name=self.name,
-                kind=JobSourceFailureKind.UNAVAILABLE,
-                action="Tente novamente mais tarde; nenhuma repetição automática foi feita.",
-                retryable=True,
-            )
+            raise _unavailable_error("O Jooble está temporariamente indisponível.")
         if response.status_code != 200:
             raise _contract_error()
-        try:
-            payload: object = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError("a resposta do Jooble deve ser um objeto JSON")
-            total_count: object = payload.get("totalCount")
-            if not isinstance(total_count, int) or isinstance(total_count, bool):
-                raise ValueError("totalCount da resposta do Jooble deve ser um inteiro")
-            jobs: object = payload.get("jobs")
-            if not isinstance(jobs, list):
-                raise ValueError("jobs da resposta do Jooble deve ser uma lista JSON")
 
-            collected_at = self._clock()
-            return tuple(_decode_posting(job, collected_at=collected_at) for job in jobs)
-        except (TypeError, ValueError):
-            raise _contract_error() from None
+        postings = _try_decode_response(response, collected_at=self._clock())
+        if postings is None:
+            raise _contract_error()
+        return postings
+
+    def _request(self, query: JobSourceQuery) -> httpx.Response:
+        try:
+            return self._client.post(
+                f"{_API_BASE_URL}/{quote(self._api_key, safe='')}",
+                headers={"Accept": "application/json"},
+                follow_redirects=False,
+                json={
+                    "keywords": query.keywords,
+                    "location": query.location,
+                    "page": 1,
+                    "ResultOnPage": query.limit,
+                },
+            )
+        except httpx.TimeoutException:
+            failure = JobSourceError(
+                "O Jooble não respondeu dentro do tempo limite.",
+                source_name=self.name,
+                kind=JobSourceFailureKind.TIMEOUT,
+                action=_RETRY_LATER_ACTION,
+                retryable=True,
+            )
+        except httpx.RequestError:
+            failure = _unavailable_error("Não foi possível conectar ao Jooble.")
+        raise failure
+
+
+def _try_decode_response(
+    response: httpx.Response,
+    *,
+    collected_at: datetime,
+) -> tuple[JobPosting, ...] | None:
+    try:
+        payload: object = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("a resposta do Jooble deve ser um objeto JSON")
+        total_count: object = payload.get("totalCount")
+        if not isinstance(total_count, int) or isinstance(total_count, bool):
+            raise ValueError("totalCount da resposta do Jooble deve ser um inteiro")
+        jobs: object = payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ValueError("jobs da resposta do Jooble deve ser uma lista JSON")
+
+        return tuple(_decode_posting(job, collected_at=collected_at) for job in jobs)
+    except (TypeError, ValueError):
+        return None
 
 
 def _contract_error() -> JobSourceError:
@@ -110,8 +114,20 @@ def _contract_error() -> JobSourceError:
         "A resposta do Jooble não corresponde ao formato esperado.",
         source_name=JoobleJobSource.name,
         kind=JobSourceFailureKind.CONTRACT,
-        action="Tente novamente mais tarde e verifique se a integração foi atualizada.",
+        action=(
+            "Verifique se a integração está atualizada e reporte uma possível mudança no contrato."
+        ),
         retryable=False,
+    )
+
+
+def _unavailable_error(message: str) -> JobSourceError:
+    return JobSourceError(
+        message,
+        source_name=JoobleJobSource.name,
+        kind=JobSourceFailureKind.UNAVAILABLE,
+        action=_RETRY_LATER_ACTION,
+        retryable=True,
     )
 
 
