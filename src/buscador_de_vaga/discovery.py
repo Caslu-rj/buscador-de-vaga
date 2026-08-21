@@ -97,6 +97,7 @@ class DiscoveryResult:
 
     candidate_profile_id: str
     criteria: SearchCriteria
+    policy_version: str
     source_report: SourceReport
     postings: tuple[JobPosting, ...]
     opportunities: tuple[Opportunity, ...]
@@ -190,13 +191,11 @@ _PREFERRED_IMPORTANCE_TERMS = (
     "preferred",
 )
 
-_NEGATED_BLOCKING_TERMS = (
-    "nao obrigatoria",
-    "nao obrigatorio",
-    "não obrigatória",
-    "não obrigatório",
-    "not mandatory",
-    "not required",
+_NEGATED_BLOCKING_PATTERN = re.compile(
+    r"(?<!\w)(?:nao|não|not)"
+    r"(?:\s+\w+){0,3}\s+"
+    r"(?:mandatory|required|must(?:\s+|-)have|obrigat[oó]ri[oa]s?)"
+    r"(?!\w)"
 )
 
 _ENTRY_PROGRAM_ALIASES: dict[EntryProgram, tuple[str, ...]] = {
@@ -238,7 +237,7 @@ _WORKPLACE_CONTEXT_TERMS = (
     "workplace",
 )
 
-_MATCH_POLICY_VERSION = "match-v1"
+_MATCH_POLICY_VERSION = "match-v2"
 _DIMENSION_WEIGHTS: tuple[tuple[FitDimension, int], ...] = (
     (FitDimension.JOB_CATEGORY, 40),
     (FitDimension.SKILLS, 25),
@@ -260,13 +259,9 @@ class _RequirementSignals:
     """Acumula subjects detectados sem apagar conflitos entre fontes."""
 
     def __init__(self) -> None:
-        self._provenance_by_subject: dict[
-            RequirementSubject, set[Provenance]
-        ] = {}
+        self._provenance_by_subject: dict[RequirementSubject, set[Provenance]] = {}
         self._values_by_kind: dict[RequirementKind, set[str]] = {}
-        self._importances_by_subject: dict[
-            RequirementSubject, set[RequirementImportance]
-        ] = {}
+        self._importances_by_subject: dict[RequirementSubject, set[RequirementImportance]] = {}
 
     def record(
         self,
@@ -275,9 +270,7 @@ class _RequirementSignals:
         *,
         importance: RequirementImportance = RequirementImportance.UNKNOWN,
     ) -> None:
-        self._values_by_kind.setdefault(subject.kind, set()).add(
-            subject.resolved_value
-        )
+        self._values_by_kind.setdefault(subject.kind, set()).add(subject.resolved_value)
         self._provenance_by_subject.setdefault(subject, set()).add(provenance)
         self._importances_by_subject.setdefault(subject, set()).add(importance)
 
@@ -286,14 +279,9 @@ class _RequirementSignals:
             Requirement(
                 id=f"{subject.kind.value}:{subject.resolved_value}",
                 subject=subject,
-                statement=(
-                    "A Opportunity declara "
-                    f"{subject.kind.value} {subject.resolved_value}."
-                ),
+                statement=(f"A Opportunity declara {subject.kind.value} {subject.resolved_value}."),
                 dimension=dimension,
-                importance=_combined_importance(
-                    self._importances_by_subject[subject]
-                ),
+                importance=_combined_importance(self._importances_by_subject[subject]),
                 provenance=tuple(
                     sorted(
                         self._provenance_by_subject[subject],
@@ -337,8 +325,7 @@ class OpportunityDiscovery:
             _assess_opportunity(opportunity, profile) for opportunity in opportunities
         )
         assessments_by_opportunity_id = {
-            assessment.opportunity_id: assessment
-            for assessment in match_assessments
+            assessment.opportunity_id: assessment for assessment in match_assessments
         }
         shortlist_items = _ranked_shortlist_items(
             opportunities,
@@ -348,6 +335,7 @@ class OpportunityDiscovery:
         return DiscoveryResult(
             candidate_profile_id=profile.id,
             criteria=criteria,
+            policy_version=_MATCH_POLICY_VERSION,
             source_report=SourceReport(
                 source_name=self._source.name,
                 postings_received=len(postings),
@@ -396,16 +384,17 @@ def _shortlist_sort_key(
 
 def _latest_source_update_timestamp(opportunity: Opportunity) -> float | None:
     known_updates = tuple(
-        _utc_timestamp(posting.source_updated_at)
+        timestamp
         for posting in opportunity.postings
         if posting.source_updated_at is not None
+        if (timestamp := _utc_timestamp(posting.source_updated_at)) is not None
     )
     return max(known_updates, default=None)
 
 
-def _utc_timestamp(value: datetime) -> float:
+def _utc_timestamp(value: datetime) -> float | None:
     if value.tzinfo is None or value.utcoffset() is None:
-        value = value.replace(tzinfo=UTC)
+        return None
     return value.astimezone(UTC).timestamp()
 
 
@@ -505,9 +494,7 @@ def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
             statement=f"A Opportunity pertence à JobCategory {category.value}.",
             dimension=FitDimension.JOB_CATEGORY,
             importance=RequirementImportance.UNKNOWN,
-            provenance=tuple(
-                sorted(provenance_by_category[category], key=_provenance_sort_key)
-            ),
+            provenance=tuple(sorted(provenance_by_category[category], key=_provenance_sort_key)),
             is_resolved=is_resolved,
         )
         for category in sorted(provenance_by_category, key=lambda item: item.value)
@@ -519,9 +506,7 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     importances_by_skill: dict[str, set[RequirementImportance]] = {}
     for posting in opportunity.postings:
         for skill in _skills_in_text(posting.title):
-            importances_by_skill.setdefault(skill, set()).add(
-                RequirementImportance.UNKNOWN
-            )
+            importances_by_skill.setdefault(skill, set()).add(RequirementImportance.UNKNOWN)
             provenance_by_skill.setdefault(skill, set()).add(
                 Provenance(
                     origin=posting.source_name,
@@ -547,9 +532,7 @@ def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
             statement=f"A Opportunity menciona explicitamente a skill {skill}.",
             dimension=FitDimension.SKILLS,
             importance=_combined_importance(importances_by_skill[skill]),
-            provenance=tuple(
-                sorted(provenance_by_skill[skill], key=_provenance_sort_key)
-            ),
+            provenance=tuple(sorted(provenance_by_skill[skill], key=_provenance_sort_key)),
         )
         for skill in sorted(provenance_by_skill)
     )
@@ -574,9 +557,20 @@ def _skill_signals_in_explicit_context(
     ):
         skills = _skills_in_text(clause)
         if len(skills) > 1:
-            importance = RequirementImportance.UNKNOWN
+            importance = _collective_skill_importance(clause, skills)
         signals.update((skill, importance) for skill in skills)
     return signals
+
+
+def _collective_skill_importance(
+    clause: str,
+    skills: set[str],
+) -> RequirementImportance:
+    normalized_clause = _comparison_text(clause) or ""
+    header, separator, listed_requirements = normalized_clause.partition(":")
+    if not separator or _skills_in_text(header) or _skills_in_text(listed_requirements) != skills:
+        return RequirementImportance.UNKNOWN
+    return _importance_in_clause(header)
 
 
 def _explicit_requirement_clauses(
@@ -600,17 +594,13 @@ def _explicit_requirement_clauses(
 
 
 def _importance_in_clause(normalized_clause: str) -> RequirementImportance:
-    without_negated_blocking = normalized_clause
-    for term in _NEGATED_BLOCKING_TERMS:
-        without_negated_blocking = without_negated_blocking.replace(term, " ")
+    without_negated_blocking = _NEGATED_BLOCKING_PATTERN.sub(" ", normalized_clause)
 
     has_blocking = any(
-        _contains_term(without_negated_blocking, term)
-        for term in _BLOCKING_IMPORTANCE_TERMS
+        _contains_term(without_negated_blocking, term) for term in _BLOCKING_IMPORTANCE_TERMS
     )
     has_preferred = any(
-        _contains_term(normalized_clause, term)
-        for term in _PREFERRED_IMPORTANCE_TERMS
+        _contains_term(normalized_clause, term) for term in _PREFERRED_IMPORTANCE_TERMS
     )
     if has_blocking == has_preferred:
         return RequirementImportance.UNKNOWN
@@ -683,9 +673,7 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                 )
 
         if posting.summary is not None:
-            for mode, importance in _workplace_mode_signals_in_explicit_context(
-                posting.summary
-            ):
+            for mode, importance in _workplace_mode_signals_in_explicit_context(posting.summary):
                 signals.record(
                     RequirementSubject.workplace_mode(mode),
                     Provenance(
@@ -715,9 +703,10 @@ def _workplace_mode_signals_in_explicit_context(
         summary,
         context_terms=_WORKPLACE_CONTEXT_TERMS,
     ):
-        signals.update(
-            (mode, importance) for mode in _workplace_modes_in_text(clause)
-        )
+        modes = _workplace_modes_in_text(clause)
+        if len(modes) > 1 or _skills_in_text(clause):
+            importance = RequirementImportance.UNKNOWN
+        signals.update((mode, importance) for mode in modes)
     return signals
 
 
@@ -780,8 +769,7 @@ def _matching_profile_evidence(
         evidence
         for evidence in profile.evidence
         if evidence.subject.kind is requirement.subject.kind
-        and _comparison_text(evidence.subject.value)
-        == _comparison_text(requirement.subject.value)
+        and _comparison_text(evidence.subject.value) == _comparison_text(requirement.subject.value)
     )
 
 
@@ -817,9 +805,7 @@ def _point_allocations(requirements: tuple[Requirement, ...]) -> dict[str, int]:
     allocations: dict[str, int] = {}
     for dimension, weight in _DIMENSION_WEIGHTS:
         dimension_requirements = tuple(
-            requirement
-            for requirement in requirements
-            if requirement.dimension is dimension
+            requirement for requirement in requirements if requirement.dimension is dimension
         )
         if not dimension_requirements:
             continue
@@ -830,9 +816,7 @@ def _point_allocations(requirements: tuple[Requirement, ...]) -> dict[str, int]:
 
 
 def _requirement_sort_key(requirement: Requirement) -> tuple[int, str, str]:
-    dimension_order = {
-        dimension: index for index, (dimension, _) in enumerate(_DIMENSION_WEIGHTS)
-    }
+    dimension_order = {dimension: index for index, (dimension, _) in enumerate(_DIMENSION_WEIGHTS)}
     return (
         dimension_order[requirement.dimension],
         requirement.subject.kind.value,
@@ -902,9 +886,7 @@ def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity
         _to_opportunity(group)
         for group in sorted(
             normalized_groups,
-            key=lambda group: min(
-                (posting.source_name, posting.external_id) for posting in group
-            ),
+            key=lambda group: min((posting.source_name, posting.external_id) for posting in group),
         )
     )
 

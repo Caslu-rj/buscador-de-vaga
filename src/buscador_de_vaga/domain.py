@@ -40,9 +40,7 @@ class WorkplaceMode(StrEnum):
     REMOTE = "remote"
 
 
-type RequirementSubjectValue = (
-    JobCategory | EntryProgram | Seniority | WorkplaceMode | str
-)
+type RequirementSubjectValue = JobCategory | EntryProgram | Seniority | WorkplaceMode | str
 
 
 class EvidenceAssertion(StrEnum):
@@ -367,11 +365,9 @@ class MatchAssessment:
             PossibleBlocker(assessment=assessment)
             for assessment in self.requirement_assessments
             if assessment.status is not RequirementStatus.MET
-            and assessment.requirement.importance
-            is not RequirementImportance.PREFERRED
+            and assessment.requirement.importance is not RequirementImportance.PREFERRED
             and not (
-                assessment.requirement.importance
-                is RequirementImportance.BLOCKING
+                assessment.requirement.importance is RequirementImportance.BLOCKING
                 and assessment.status is RequirementStatus.UNMET
             )
         )
