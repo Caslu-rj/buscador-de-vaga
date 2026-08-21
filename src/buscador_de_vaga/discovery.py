@@ -1,6 +1,7 @@
 """Interface profunda para descobrir e organizar oportunidades."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from buscador_de_vaga.domain import (
@@ -16,6 +17,36 @@ from buscador_de_vaga.domain import (
 
 class InvalidDiscoveryRequest(ValueError):
     """Indica que perfil e critérios não formam uma busca válida."""
+
+
+class JobSourceFailureKind(StrEnum):
+    """Categorias estáveis de falha que não expõem detalhes do fornecedor."""
+
+    CONFIGURATION = "configuration"
+    AUTHENTICATION = "authentication"
+    RATE_LIMIT = "rate_limit"
+    TIMEOUT = "timeout"
+    UNAVAILABLE = "unavailable"
+    CONTRACT = "contract"
+
+
+class JobSourceError(RuntimeError):
+    """Falha segura e acionável produzida por um JobSource."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        source_name: str,
+        kind: JobSourceFailureKind,
+        action: str,
+        retryable: bool,
+    ) -> None:
+        super().__init__(message)
+        self.source_name = source_name
+        self.kind = kind
+        self.action = action
+        self.retryable = retryable
 
 
 class JobSource(Protocol):
