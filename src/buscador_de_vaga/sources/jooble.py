@@ -9,7 +9,7 @@ import httpx
 from buscador_de_vaga.discovery import JobSourceError, JobSourceFailureKind
 from buscador_de_vaga.domain import JobPosting, JobSourceQuery
 
-_API_BASE_URL = "https://jooble.org/api"
+_API_BASE_URL = "https://br.jooble.org/api"
 _RETRY_LATER_ACTION = "Tente novamente mais tarde; nenhuma repetição automática foi feita."
 
 

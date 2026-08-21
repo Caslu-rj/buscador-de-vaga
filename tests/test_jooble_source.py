@@ -23,7 +23,7 @@ def test_jooble_search_mapeia_resposta_documentada_para_job_posting() -> None:
         assert request_received is False, "a busca deve consultar somente uma página"
         request_received = True
         assert request.method == "POST"
-        assert request.url == httpx.URL(f"https://jooble.org/api/{API_KEY}")
+        assert request.url == httpx.URL(f"https://br.jooble.org/api/{API_KEY}")
         assert request.headers["content-type"] == "application/json"
         assert request.headers["accept"] == "application/json"
         assert json.loads(request.content) == {
