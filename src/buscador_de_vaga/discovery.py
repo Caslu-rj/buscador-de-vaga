@@ -1,5 +1,6 @@
 """Interface profunda para descobrir e organizar oportunidades."""
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal, Protocol
@@ -8,12 +9,28 @@ from urllib.parse import urlsplit, urlunsplit
 
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    EntryProgram,
+    Evidence,
+    EvidenceAssertion,
+    FitBreakdown,
+    FitDimension,
+    FitScore,
     JobCategory,
     JobPosting,
     JobSourceQuery,
+    MatchAssessment,
     Opportunity,
+    Provenance,
+    Requirement,
+    RequirementAssessment,
+    RequirementImportance,
+    RequirementKind,
+    RequirementStatus,
+    RequirementSubject,
     SearchCriteria,
+    Seniority,
     Shortlist,
+    WorkplaceMode,
 )
 
 
@@ -81,6 +98,7 @@ class DiscoveryResult:
     source_report: SourceReport
     postings: tuple[JobPosting, ...]
     opportunities: tuple[Opportunity, ...]
+    match_assessments: tuple[MatchAssessment, ...]
     shortlist: Shortlist
 
 
@@ -92,10 +110,154 @@ _CATEGORY_SEARCH_TERMS: dict[JobCategory, str] = {
     JobCategory.DATA: "analista de dados",
 }
 
+_CATEGORY_TITLE_ALIASES: dict[JobCategory, tuple[str, ...]] = {
+    JobCategory.SOFTWARE_DEVELOPMENT: (
+        "backend engineer",
+        "desenvolvedor",
+        "desenvolvedora",
+        "developer",
+        "programador",
+        "programadora",
+        "software engineer",
+    ),
+    JobCategory.IT_SUPPORT_INFRASTRUCTURE: (
+        "help desk",
+        "infraestrutura",
+        "service desk",
+        "suporte",
+    ),
+    JobCategory.SYSTEMS: ("analista de sistemas", "systems analyst"),
+    JobCategory.QUALITY_ASSURANCE: (
+        "quality assurance",
+        "qa",
+        "software tester",
+        "tester",
+    ),
+    JobCategory.DATA: (
+        "analista de dados",
+        "analytics",
+        "business intelligence",
+        "data analyst",
+    ),
+}
+
+_SKILL_ALIASES: dict[str, tuple[str, ...]] = {
+    "aws": ("amazon web services", "aws"),
+    "docker": ("docker",),
+    "git": ("git",),
+    "linux": ("linux",),
+    "python": ("python",),
+    "sql": ("sql",),
+}
+
+_SKILL_CONTEXT_TERMS = (
+    "conhecimento",
+    "conhecimentos",
+    "desejável",
+    "desejavel",
+    "experiência",
+    "experiencia",
+    "habilidade",
+    "habilidades",
+    "requisito",
+    "requisitos",
+    "skills",
+    "tecnologia",
+    "tecnologias",
+)
+
+_ENTRY_PROGRAM_ALIASES: dict[EntryProgram, tuple[str, ...]] = {
+    EntryProgram.APPRENTICESHIP: ("aprendiz",),
+    EntryProgram.INTERNSHIP: (
+        "estagiário",
+        "estagiaria",
+        "estagiária",
+        "estagio",
+        "estágio",
+        "intern",
+    ),
+    EntryProgram.TRAINEE: ("trainee",),
+}
+
+_SENIORITY_ALIASES: dict[Seniority, tuple[str, ...]] = {
+    Seniority.JUNIOR: ("jr", "junior", "júnior"),
+    Seniority.MID_LEVEL: ("mid-level", "pleno"),
+    Seniority.SENIOR: ("senior", "sênior"),
+}
+
+_WORKPLACE_MODE_ALIASES: dict[WorkplaceMode, tuple[str, ...]] = {
+    WorkplaceMode.HYBRID: (
+        "hibrida",
+        "hibrido",
+        "híbrida",
+        "híbrido",
+        "hybrid",
+    ),
+    WorkplaceMode.ONSITE: ("on-site", "onsite", "presencial"),
+    WorkplaceMode.REMOTE: ("home office", "remote", "remota", "remoto"),
+}
+
+_WORKPLACE_CONTEXT_TERMS = (
+    "modelo",
+    "modalidade",
+    "regime",
+    "trabalho",
+    "workplace",
+)
+
+_MATCH_POLICY_VERSION = "match-v1"
+_DIMENSION_WEIGHTS: tuple[tuple[FitDimension, int], ...] = (
+    (FitDimension.JOB_CATEGORY, 40),
+    (FitDimension.SKILLS, 25),
+    (FitDimension.ENTRY_PROGRAM_SENIORITY, 20),
+    (FitDimension.LOCATION_WORKPLACE_MODE, 15),
+)
+
 type _ExternalIdentity = tuple[Literal["external-id"], str, str]
 type _CanonicalUrlIdentity = tuple[Literal["canonical-url"], str]
 type _StrongIdentity = _ExternalIdentity | _CanonicalUrlIdentity
 type _CompleteFieldsIdentity = tuple[str, str, str]
+
+
+class _RequirementSignals:
+    """Acumula subjects detectados sem apagar conflitos entre fontes."""
+
+    def __init__(self) -> None:
+        self._provenance_by_subject: dict[
+            RequirementSubject, set[Provenance]
+        ] = {}
+        self._values_by_kind: dict[RequirementKind, set[str]] = {}
+
+    def record(self, subject: RequirementSubject, provenance: Provenance) -> None:
+        self._values_by_kind.setdefault(subject.kind, set()).add(
+            subject.resolved_value
+        )
+        self._provenance_by_subject.setdefault(subject, set()).add(provenance)
+
+    def to_requirements(self, dimension: FitDimension) -> tuple[Requirement, ...]:
+        return tuple(
+            Requirement(
+                id=f"{subject.kind.value}:{subject.resolved_value}",
+                subject=subject,
+                statement=(
+                    "A Opportunity declara "
+                    f"{subject.kind.value} {subject.resolved_value}."
+                ),
+                dimension=dimension,
+                importance=RequirementImportance.UNKNOWN,
+                provenance=tuple(
+                    sorted(
+                        self._provenance_by_subject[subject],
+                        key=_provenance_sort_key,
+                    )
+                ),
+                is_resolved=len(self._values_by_kind[subject.kind]) == 1,
+            )
+            for subject in sorted(
+                self._provenance_by_subject,
+                key=lambda item: (item.kind.value, item.resolved_value),
+            )
+        )
 
 
 class OpportunityDiscovery:
@@ -122,6 +284,9 @@ class OpportunityDiscovery:
         )
         postings = self._source.search(query)
         opportunities = _consolidate_postings(postings)
+        match_assessments = tuple(
+            _assess_opportunity(opportunity, profile) for opportunity in opportunities
+        )
 
         return DiscoveryResult(
             candidate_profile_id=profile.id,
@@ -132,8 +297,383 @@ class OpportunityDiscovery:
             ),
             postings=postings,
             opportunities=opportunities,
+            match_assessments=match_assessments,
             shortlist=Shortlist(items=opportunities),
         )
+
+
+def _assess_opportunity(
+    opportunity: Opportunity,
+    profile: CandidateProfile,
+) -> MatchAssessment:
+    requirements = tuple(
+        sorted(
+            (
+                *_category_requirements(opportunity),
+                *_skill_requirements(opportunity),
+                *_entry_requirements(opportunity),
+                *_location_requirements(opportunity),
+            ),
+            key=_requirement_sort_key,
+        )
+    )
+    point_allocations = _point_allocations(requirements)
+    assessments = tuple(
+        _assess_requirement(
+            requirement,
+            profile,
+            maximum_points=point_allocations[requirement.id],
+        )
+        for requirement in requirements
+    )
+    breakdown = tuple(
+        FitBreakdown(
+            dimension=dimension,
+            weight=weight,
+            awarded_points=sum(
+                assessment.awarded_points
+                for assessment in assessments
+                if assessment.requirement.dimension is dimension
+            ),
+            covered_weight=sum(
+                assessment.covered_points
+                for assessment in assessments
+                if assessment.requirement.dimension is dimension
+            ),
+        )
+        for dimension, weight in _DIMENSION_WEIGHTS
+    )
+    return MatchAssessment(
+        opportunity_id=opportunity.id,
+        requirement_assessments=assessments,
+        fit_score=FitScore(
+            value=sum(item.awarded_points for item in breakdown),
+            evidence_coverage=sum(item.covered_weight for item in breakdown),
+            policy_version=_MATCH_POLICY_VERSION,
+            breakdown=breakdown,
+        ),
+    )
+
+
+def _category_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
+    provenance_by_category: dict[JobCategory, set[Provenance]] = {}
+    for posting in opportunity.postings:
+        for category in _categories_in_title(posting.title):
+            provenance_by_category.setdefault(category, set()).add(
+                Provenance(
+                    origin=posting.source_name,
+                    locator=f"{posting.external_id}#title",
+                )
+            )
+
+    if not provenance_by_category:
+        return (
+            Requirement(
+                id="job-category:unknown",
+                subject=RequirementSubject.job_category(None),
+                statement="A JobCategory da Opportunity não pôde ser identificada.",
+                dimension=FitDimension.JOB_CATEGORY,
+                importance=RequirementImportance.UNKNOWN,
+                provenance=tuple(
+                    sorted(
+                        (
+                            Provenance(
+                                origin=posting.source_name,
+                                locator=f"{posting.external_id}#title",
+                            )
+                            for posting in opportunity.postings
+                        ),
+                        key=_provenance_sort_key,
+                    )
+                ),
+                is_resolved=False,
+            ),
+        )
+
+    is_resolved = len(provenance_by_category) == 1
+    return tuple(
+        Requirement(
+            id=f"job-category:{category.value}",
+            subject=RequirementSubject.job_category(category),
+            statement=f"A Opportunity pertence à JobCategory {category.value}.",
+            dimension=FitDimension.JOB_CATEGORY,
+            importance=RequirementImportance.UNKNOWN,
+            provenance=tuple(
+                sorted(provenance_by_category[category], key=_provenance_sort_key)
+            ),
+            is_resolved=is_resolved,
+        )
+        for category in sorted(provenance_by_category, key=lambda item: item.value)
+    )
+
+
+def _skill_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
+    provenance_by_skill: dict[str, set[Provenance]] = {}
+    for posting in opportunity.postings:
+        for skill in _skills_in_text(posting.title):
+            provenance_by_skill.setdefault(skill, set()).add(
+                Provenance(
+                    origin=posting.source_name,
+                    locator=f"{posting.external_id}#title",
+                )
+            )
+
+        if posting.summary is None:
+            continue
+        for skill in _skills_in_explicit_context(posting.summary):
+            provenance_by_skill.setdefault(skill, set()).add(
+                Provenance(
+                    origin=posting.source_name,
+                    locator=f"{posting.external_id}#summary",
+                )
+            )
+
+    return tuple(
+        Requirement(
+            id=f"skill:{skill}",
+            subject=RequirementSubject.skill(skill),
+            statement=f"A Opportunity menciona explicitamente a skill {skill}.",
+            dimension=FitDimension.SKILLS,
+            importance=RequirementImportance.UNKNOWN,
+            provenance=tuple(
+                sorted(provenance_by_skill[skill], key=_provenance_sort_key)
+            ),
+        )
+        for skill in sorted(provenance_by_skill)
+    )
+
+
+def _skills_in_text(value: str) -> set[str]:
+    normalized = _comparison_text(value) or ""
+    return {
+        skill
+        for skill, aliases in _SKILL_ALIASES.items()
+        if any(_contains_term(normalized, alias) for alias in aliases)
+    }
+
+
+def _skills_in_explicit_context(summary: str) -> set[str]:
+    skills: set[str] = set()
+    for clause in re.split(r"[.!?;\r\n]+", summary):
+        normalized_clause = _comparison_text(clause) or ""
+        if any(
+            _contains_term(normalized_clause, term)
+            for term in _SKILL_CONTEXT_TERMS
+        ):
+            skills.update(_skills_in_text(clause))
+    return skills
+
+
+def _entry_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
+    signals = _RequirementSignals()
+    for posting in opportunity.postings:
+        for subject in _entry_subjects_in_title(posting.title):
+            signals.record(
+                subject,
+                Provenance(
+                    origin=posting.source_name,
+                    locator=f"{posting.external_id}#title",
+                ),
+            )
+
+    return signals.to_requirements(FitDimension.ENTRY_PROGRAM_SENIORITY)
+
+
+def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
+    normalized = _comparison_text(title) or ""
+    subjects = {
+        RequirementSubject.entry_program(value)
+        for value, aliases in _ENTRY_PROGRAM_ALIASES.items()
+        if any(_contains_term(normalized, alias) for alias in aliases)
+    }
+    subjects.update(
+        RequirementSubject.seniority(value)
+        for value, aliases in _SENIORITY_ALIASES.items()
+        if any(_contains_term(normalized, alias) for alias in aliases)
+    )
+    return subjects
+
+
+def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
+    signals = _RequirementSignals()
+    for posting in opportunity.postings:
+        if posting.location is not None:
+            workplace_modes = _workplace_modes_in_text(posting.location)
+            normalized_location = _comparison_text(posting.location)
+            if normalized_location is not None and not workplace_modes:
+                location_subject = RequirementSubject.location(normalized_location)
+                signals.record(
+                    location_subject,
+                    Provenance(
+                        origin=posting.source_name,
+                        locator=f"{posting.external_id}#location",
+                    ),
+                )
+            for mode in workplace_modes:
+                signals.record(
+                    RequirementSubject.workplace_mode(mode),
+                    Provenance(
+                        origin=posting.source_name,
+                        locator=f"{posting.external_id}#location",
+                    ),
+                )
+
+        if posting.summary is not None and _has_workplace_context(posting.summary):
+            for mode in _workplace_modes_in_text(posting.summary):
+                signals.record(
+                    RequirementSubject.workplace_mode(mode),
+                    Provenance(
+                        origin=posting.source_name,
+                        locator=f"{posting.external_id}#summary",
+                    ),
+                )
+
+    return signals.to_requirements(FitDimension.LOCATION_WORKPLACE_MODE)
+
+
+def _workplace_modes_in_text(value: str) -> set[WorkplaceMode]:
+    normalized = _comparison_text(value) or ""
+    return {
+        mode
+        for mode, aliases in _WORKPLACE_MODE_ALIASES.items()
+        if any(_contains_term(normalized, alias) for alias in aliases)
+    }
+
+
+def _has_workplace_context(summary: str) -> bool:
+    normalized = _comparison_text(summary) or ""
+    return any(_contains_term(normalized, term) for term in _WORKPLACE_CONTEXT_TERMS)
+
+
+def _categories_in_title(title: str) -> set[JobCategory]:
+    normalized = _comparison_text(title) or ""
+    return {
+        category
+        for category, aliases in _CATEGORY_TITLE_ALIASES.items()
+        if any(_contains_term(normalized, alias) for alias in aliases)
+    }
+
+
+def _contains_term(text: str, term: str) -> bool:
+    escaped = re.escape(term).replace(r"\ ", r"\s+")
+    return re.search(rf"(?<!\w){escaped}(?!\w)", text) is not None
+
+
+def _assess_requirement(
+    requirement: Requirement,
+    profile: CandidateProfile,
+    *,
+    maximum_points: int,
+) -> RequirementAssessment:
+    evidence = tuple(
+        sorted(
+            (
+                *_matching_profile_evidence(requirement, profile),
+                *_derived_category_evidence(requirement, profile),
+            ),
+            key=_evidence_sort_key,
+        )
+    )
+    assertions = {item.assertion for item in evidence}
+    if not requirement.is_resolved:
+        status = RequirementStatus.UNKNOWN
+    elif assertions == {EvidenceAssertion.SUPPORTS}:
+        status = RequirementStatus.MET
+    elif assertions == {EvidenceAssertion.CONTRADICTS}:
+        status = RequirementStatus.UNMET
+    else:
+        status = RequirementStatus.UNKNOWN
+
+    awarded_points = maximum_points if status is RequirementStatus.MET else 0
+    covered_points = maximum_points if status is not RequirementStatus.UNKNOWN else 0
+    return RequirementAssessment(
+        requirement=requirement,
+        status=status,
+        evidence=evidence,
+        maximum_points=maximum_points,
+        awarded_points=awarded_points,
+        covered_points=covered_points,
+    )
+
+
+def _matching_profile_evidence(
+    requirement: Requirement,
+    profile: CandidateProfile,
+) -> tuple[Evidence, ...]:
+    return tuple(
+        evidence
+        for evidence in profile.evidence
+        if evidence.subject.kind is requirement.subject.kind
+        and _comparison_text(evidence.subject.value)
+        == _comparison_text(requirement.subject.value)
+    )
+
+
+def _derived_category_evidence(
+    requirement: Requirement,
+    profile: CandidateProfile,
+) -> tuple[Evidence, ...]:
+    if requirement.subject.kind is not RequirementKind.JOB_CATEGORY:
+        return ()
+
+    subject_value = requirement.subject.value
+    if not isinstance(subject_value, JobCategory):
+        return ()
+    category = subject_value
+    if category not in profile.target_categories:
+        return ()
+
+    return (
+        Evidence(
+            id=f"candidate-profile:target-category:{category.value}",
+            subject=requirement.subject,
+            statement=f"CandidateProfile declara {category.value} em target_categories.",
+            assertion=EvidenceAssertion.SUPPORTS,
+            provenance=Provenance(
+                origin="candidate-profile",
+                locator="target_categories",
+            ),
+        ),
+    )
+
+
+def _point_allocations(requirements: tuple[Requirement, ...]) -> dict[str, int]:
+    allocations: dict[str, int] = {}
+    for dimension, weight in _DIMENSION_WEIGHTS:
+        dimension_requirements = tuple(
+            requirement
+            for requirement in requirements
+            if requirement.dimension is dimension
+        )
+        if not dimension_requirements:
+            continue
+        base_points, remainder = divmod(weight, len(dimension_requirements))
+        for index, requirement in enumerate(dimension_requirements):
+            allocations[requirement.id] = base_points + (index < remainder)
+    return allocations
+
+
+def _requirement_sort_key(requirement: Requirement) -> tuple[int, str, str]:
+    dimension_order = {
+        dimension: index for index, (dimension, _) in enumerate(_DIMENSION_WEIGHTS)
+    }
+    return (
+        dimension_order[requirement.dimension],
+        requirement.subject.kind.value,
+        requirement.subject.value or "",
+    )
+
+
+def _evidence_sort_key(evidence: Evidence) -> tuple[str, str, str]:
+    return (
+        evidence.id,
+        evidence.provenance.origin,
+        evidence.provenance.locator,
+    )
+
+
+def _provenance_sort_key(provenance: Provenance) -> tuple[str, str]:
+    return (provenance.origin, provenance.locator)
 
 
 def _consolidate_postings(postings: tuple[JobPosting, ...]) -> tuple[Opportunity, ...]:
