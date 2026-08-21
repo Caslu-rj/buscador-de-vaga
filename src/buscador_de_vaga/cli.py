@@ -1,35 +1,42 @@
-"""CLI do primeiro tracer bullet de descoberta."""
+"""CLI local para descobrir e apresentar oportunidades."""
 
 import argparse
+import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from buscador_de_vaga.discovery import InvalidDiscoveryRequest, OpportunityDiscovery
-from buscador_de_vaga.domain import JobCategory, SearchCriteria
+import httpx
+
+from buscador_de_vaga.discovery import (
+    InvalidDiscoveryRequest,
+    JobSource,
+    JobSourceError,
+    JobSourceFailureKind,
+    OpportunityDiscovery,
+)
+from buscador_de_vaga.domain import CandidateProfile, JobCategory, SearchCriteria
 from buscador_de_vaga.profile import CandidateProfileError, load_candidate_profile
+from buscador_de_vaga.sources.jooble import JoobleJobSource
 from buscador_de_vaga.sources.synthetic import SyntheticJobSource, SyntheticSourceError
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    http_client: httpx.Client | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> int:
     """Executa a CLI e devolve um código adequado para o processo."""
     parser = _build_parser()
     arguments = parser.parse_args(argv)
 
     try:
         profile = load_candidate_profile(Path(arguments.profile))
-        source = SyntheticJobSource.from_file(Path(arguments.postings_file))
     except CandidateProfileError as error:
         print(f"Erro: {error}", file=sys.stderr)
         print(
             "Ação: verifique o caminho e o formato do CandidateProfile.",
-            file=sys.stderr,
-        )
-        return 2
-    except SyntheticSourceError as error:
-        print(f"Erro: {error}", file=sys.stderr)
-        print(
-            "Ação: verifique o caminho e o formato da fixture de JobPostings.",
             file=sys.stderr,
         )
         return 2
@@ -39,6 +46,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         location=arguments.location,
         limit=arguments.limit,
     )
+
+    if arguments.postings_file is not None:
+        try:
+            source = SyntheticJobSource.from_file(Path(arguments.postings_file))
+        except SyntheticSourceError as error:
+            print(f"Erro: {error}", file=sys.stderr)
+            print(
+                "Ação: verifique o caminho e o formato da fixture de JobPostings.",
+                file=sys.stderr,
+            )
+            return 2
+        return _discover_and_present(profile=profile, criteria=criteria, source=source)
+
+    try:
+        api_key = _required_jooble_api_key(os.environ if environ is None else environ)
+    except JobSourceError as error:
+        return _report_source_error(error)
+
+    if http_client is not None:
+        return _discover_and_present(
+            profile=profile,
+            criteria=criteria,
+            source=JoobleJobSource(api_key=api_key, client=http_client),
+        )
+
+    with httpx.Client(timeout=10.0, follow_redirects=False) as client:
+        return _discover_and_present(
+            profile=profile,
+            criteria=criteria,
+            source=JoobleJobSource(api_key=api_key, client=client),
+        )
+
+
+def _discover_and_present(
+    *,
+    profile: CandidateProfile,
+    criteria: SearchCriteria,
+    source: JobSource,
+) -> int:
     try:
         result = OpportunityDiscovery(source=source).discover(profile, criteria)
     except InvalidDiscoveryRequest as error:
@@ -55,6 +101,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except JobSourceError as error:
+        return _report_source_error(error)
 
     count = len(result.shortlist.items)
     if count == 0:
@@ -92,14 +140,40 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=_positive_integer,
         default=10,
-        help="Número máximo de publicações sintéticas.",
+        help="Número máximo de publicações retornadas na primeira página.",
     )
-    parser.add_argument(
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--postings-file",
-        required=True,
         help="Arquivo JSON de JobPostings sintéticos para o tracer bullet.",
     )
+    source_group.add_argument(
+        "--jooble",
+        action="store_true",
+        help="Consulta live explícita ao Jooble usando JOOBLE_API_KEY.",
+    )
     return parser
+
+
+def _required_jooble_api_key(environ: Mapping[str, str]) -> str:
+    api_key = environ.get("JOOBLE_API_KEY")
+    if api_key is None or not api_key.strip():
+        raise JobSourceError(
+            "JOOBLE_API_KEY não está configurada.",
+            source_name=JoobleJobSource.name,
+            kind=JobSourceFailureKind.CONFIGURATION,
+            action="defina JOOBLE_API_KEY no ambiente antes da busca live.",
+            retryable=False,
+        )
+    return api_key.strip()
+
+
+def _report_source_error(error: JobSourceError) -> int:
+    print(f"Erro: {error}", file=sys.stderr)
+    print(f"Ação: {error.action}", file=sys.stderr)
+    if error.kind is JobSourceFailureKind.CONFIGURATION:
+        return 2
+    return 1
 
 
 def _positive_integer(value: str) -> int:

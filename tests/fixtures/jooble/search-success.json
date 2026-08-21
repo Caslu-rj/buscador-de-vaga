@@ -1,0 +1,17 @@
+{
+  "totalCount": 1,
+  "jobs": [
+    {
+      "id": 9000001,
+      "title": "Pessoa Desenvolvedora Júnior",
+      "location": "Brasil - remoto",
+      "snippet": "Fixture sintética para validar a integração.",
+      "salary": "A combinar",
+      "source": "fixture.example",
+      "type": "Tempo integral",
+      "link": "https://example.invalid/jobs/9000001",
+      "company": "Empresa Exemplo",
+      "updated": "2026-08-20T12:00:00Z"
+    }
+  ]
+}
