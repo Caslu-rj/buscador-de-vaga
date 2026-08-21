@@ -46,6 +46,45 @@ def test_cli_exibe_o_resultado_principal_de_uma_descoberta_sintetica(
     assert completed.stderr == ""
 
 
+def test_cli_exibe_uma_unica_opportunity_para_postings_consolidados(
+    tmp_path: Path,
+) -> None:
+    profile_path = _write_profile(tmp_path)
+    postings_path = _write_fixture(
+        tmp_path,
+        keywords="desenvolvedor de software",
+        location="Brasil",
+        postings=[
+            {
+                "external_id": "job-001",
+                "title": "Desenvolvedor Python",
+                "company": "ACME Tecnologia",
+                "location": "Brasil",
+                "source_url": "https://jobs.example.invalid/job-001",
+                "collected_at": "2026-08-21T12:00:00Z",
+            },
+            {
+                "external_id": "job-001",
+                "title": "Backend Engineer",
+                "company": "ACME Tecnologia",
+                "location": "Brasil",
+                "source_url": "https://mirror.example.invalid/job-001",
+                "collected_at": "2026-08-21T13:00:00Z",
+            },
+        ],
+    )
+
+    completed = _run_cli(profile_path, postings_path, location="Brasil")
+
+    assert completed.returncode == 0
+    assert "1 oportunidade encontrada" in completed.stdout
+    assert completed.stdout.count("\n1. ") == 1
+    assert completed.stdout.count("   URL: ") == 1
+    assert "Desenvolvedor Python" in completed.stdout
+    assert "Backend Engineer" not in completed.stdout
+    assert completed.stderr == ""
+
+
 def test_cli_trata_resultado_vazio_como_sucesso(tmp_path: Path) -> None:
     completed = _run_cli(
         _write_profile(tmp_path),
