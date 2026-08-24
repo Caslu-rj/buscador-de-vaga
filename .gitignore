@@ -24,6 +24,11 @@ __pycache__/
 .env.*
 !.env.example
 /.data/
+/resumes/
+*.pdf
+*.docx
+!tests/fixtures/**/*.pdf
+!tests/fixtures/**/*.docx
 *.db
 *.sqlite
 *.sqlite3
