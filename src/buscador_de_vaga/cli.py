@@ -22,7 +22,11 @@ from buscador_de_vaga.domain import (
     JobCategory,
     SearchCriteria,
 )
-from buscador_de_vaga.profile import CandidateProfileError, load_candidate_profile
+from buscador_de_vaga.profile import (
+    CandidateProfileError,
+    load_candidate_profile,
+    serialize_candidate_profile,
+)
 from buscador_de_vaga.resume import (
     CandidateProfileDraft,
     DeterministicResumeParser,
@@ -373,14 +377,28 @@ def _handle_importar_curriculo(args: list[str]) -> int:
                     categories_set.add(draft_ev.evidence.subject.value)
 
         if not categories_set:
-            categories_set.add(JobCategory.SOFTWARE_DEVELOPMENT.value)
+            print(
+                "Erro: Nenhuma categoria profissional pôde ser determinada "
+                "automaticamente no currículo.",
+                file=sys.stderr,
+            )
+            print(
+                "Ação: inspecione o currículo com --review ou adicione seções "
+                "de experiência/habilidades correspondentes a uma JobCategory.",
+                file=sys.stderr,
+            )
+            return 2
 
-        ordered_categories = sorted(categories_set)
-        profile_dict = {
-            "schema_version": 1,
-            "id": f"candidate-{file_path.stem}",
-            "target_categories": ordered_categories,
-        }
+        ordered_categories = tuple(
+            JobCategory(cat) for cat in sorted(categories_set)
+        )
+        evidences = tuple(item.evidence for item in draft.suggested_evidences)
+        profile_obj = CandidateProfile(
+            id=f"candidate-{file_path.stem}",
+            target_categories=ordered_categories,
+            evidence=evidences,
+        )
+        profile_dict = serialize_candidate_profile(profile_obj)
 
         try:
             output_path.write_text(

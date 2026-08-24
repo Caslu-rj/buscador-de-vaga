@@ -109,7 +109,7 @@ def test_cli_importar_curriculo_review_nao_cria_arquivos(
 ) -> None:
     pdf_path = create_synthetic_pdf(
         tmp_path / "curriculo.pdf",
-        "# Habilidades\nPython, Git.",
+        "# Experiencia\nDesenvolvedor Python, Git.",
     )
     initial_files = set(tmp_path.iterdir())
 
@@ -215,7 +215,7 @@ def test_cli_importar_curriculo_recusa_output_existente(
 ) -> None:
     pdf_path = create_synthetic_pdf(
         tmp_path / "curriculo.pdf",
-        "# Habilidades\nPython.",
+        "# Experiencia\nDesenvolvedor Python.",
     )
     output_json = tmp_path / "existing.json"
     output_json.write_text("{}", encoding="utf-8")
@@ -241,7 +241,7 @@ def test_cli_importar_curriculo_force_permite_sobrescrever(
 ) -> None:
     pdf_path = create_synthetic_pdf(
         tmp_path / "curriculo.pdf",
-        "# Habilidades\nPython.",
+        "# Experiencia\nDesenvolvedor Python.",
     )
     output_json = tmp_path / "existing.json"
     output_json.write_text("{}", encoding="utf-8")
@@ -308,7 +308,7 @@ def test_cli_importar_curriculo_ausencia_de_output_e_review_erro_acionavel(
 ) -> None:
     pdf_path = create_synthetic_pdf(
         tmp_path / "curriculo.pdf",
-        "# Habilidades\nPython.",
+        "# Experiencia\nDesenvolvedor Python.",
     )
 
     exit_code = main(["importar-curriculo", "--file", str(pdf_path)])
@@ -330,7 +330,7 @@ def test_cli_importar_curriculo_sem_chamadas_de_rede(
 
     pdf_path = create_synthetic_pdf(
         tmp_path / "curriculo.pdf",
-        "# Habilidades\nPython.",
+        "# Experiencia\nDesenvolvedor Python.",
     )
     output_json = tmp_path / "out.json"
 
