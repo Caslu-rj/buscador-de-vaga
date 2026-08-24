@@ -15,7 +15,12 @@ from buscador_de_vaga.discovery import (
     JobSourceFailureKind,
     OpportunityDiscovery,
 )
-from buscador_de_vaga.domain import CandidateProfile, JobCategory, SearchCriteria
+from buscador_de_vaga.domain import (
+    CandidateProfile,
+    EligibilityStatus,
+    JobCategory,
+    SearchCriteria,
+)
 from buscador_de_vaga.profile import CandidateProfileError, load_candidate_profile
 from buscador_de_vaga.sources.jooble import JoobleJobSource
 from buscador_de_vaga.sources.synthetic import SyntheticJobSource, SyntheticSourceError
@@ -112,15 +117,64 @@ def _discover_and_present(
     noun = "oportunidade" if count == 1 else "oportunidades"
     adjective = "encontrada" if count == 1 else "encontradas"
     print(f"{count} {noun} {adjective}.")
+    assessments_by_id = {
+        assessment.opportunity_id: assessment for assessment in result.match_assessments
+    }
     for position, opportunity in enumerate(result.shortlist.items, start=1):
+        assessment = assessments_by_id[opportunity.id]
         print(f"{position}. {_safe_terminal_text(opportunity.title)}")
         if opportunity.company is not None:
             print(f"   Empresa: {_safe_terminal_text(opportunity.company)}")
         if opportunity.location is not None:
             print(f"   Local: {_safe_terminal_text(opportunity.location)}")
         print(f"   URL: {_safe_terminal_text(opportunity.source_url)}")
+        print(f"   Elegibilidade: {_eligibility_label(assessment.eligibility_status)}")
+        print(
+            f"   FitScore: {assessment.fit_score.value}/100 "
+            f"(cobertura de evidência: {assessment.fit_score.evidence_coverage}%)"
+        )
+        print("   Breakdown:")
+        for item in assessment.fit_score.breakdown:
+            print(
+                f"     - {item.dimension.value}: {item.awarded_points}/{item.weight} pts "
+                f"(cobertura: {item.covered_weight}/{item.weight})"
+            )
+        print("   Pontos fortes:")
+        if assessment.strengths:
+            for strength in assessment.strengths:
+                print(f"     - {_safe_terminal_text(strength.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Skill Gaps:")
+        if assessment.skill_gaps:
+            for gap in assessment.skill_gaps:
+                print(f"     - {_safe_terminal_text(gap.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Requisitos não informados:")
+        if assessment.unknown_requirements:
+            for unknown in assessment.unknown_requirements:
+                print(f"     - {_safe_terminal_text(unknown.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Possíveis impeditivos:")
+        if assessment.possible_blockers:
+            for blocker in assessment.possible_blockers:
+                print(f"     - {_safe_terminal_text(blocker.assessment.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
 
     return 0
+
+
+def _eligibility_label(status: EligibilityStatus) -> str:
+    if status is EligibilityStatus.ELIGIBLE:
+        return "Elegível"
+    if status is EligibilityStatus.UNCERTAIN:
+        return "Incerto"
+    if status is EligibilityStatus.INELIGIBLE:
+        return "Inelegível"
+    return status.value
 
 
 def _build_parser() -> argparse.ArgumentParser:

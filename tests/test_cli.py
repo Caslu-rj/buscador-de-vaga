@@ -273,6 +273,61 @@ def test_cli_apresenta_falha_do_jooble_sem_expor_segredos(
     assert "Traceback" not in output.err
 
 
+def test_cli_exibe_detalhes_completos_do_match_assessment(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = _write_profile(tmp_path)
+    postings_path = _write_fixture(
+        tmp_path,
+        keywords="desenvolvedor de software",
+        location="Rio de Janeiro, RJ",
+        postings=[
+            {
+                "external_id": "job-001",
+                "title": "Desenvolvedor Python Júnior",
+                "company": "ACME Tecnologia",
+                "location": "Rio de Janeiro, RJ - remoto",
+                "source_url": "https://jobs.example.invalid/job-001",
+                "collected_at": "2026-08-21T12:00:00Z",
+                "summary": "Requisitos obrigatórios: conhecimento em Python.",
+            }
+        ],
+    )
+
+    exit_code = main(
+        [
+            "--profile",
+            str(profile_path),
+            "--category",
+            "software-development",
+            "--location",
+            "Rio de Janeiro, RJ",
+            "--postings-file",
+            str(postings_path),
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "1 oportunidade encontrada." in output.out
+    assert "Desenvolvedor Python Júnior" in output.out
+    assert "Empresa: ACME Tecnologia" in output.out
+    assert "Local: Rio de Janeiro, RJ - remoto" in output.out
+    assert "URL: https://jobs.example.invalid/job-001" in output.out
+    assert "Elegibilidade: " in output.out
+    assert "FitScore: " in output.out
+    assert "Breakdown:" in output.out
+    assert "job-category:" in output.out
+    assert "skills:" in output.out
+    assert "entry-program-seniority:" in output.out
+    assert "location-workplace-mode:" in output.out
+    assert "Pontos fortes:" in output.out
+    assert "Skill Gaps:" in output.out
+    assert "Requisitos não informados:" in output.out
+    assert "Possíveis impeditivos:" in output.out
+
+
 def _write_profile(
     tmp_path: Path,
     *,
