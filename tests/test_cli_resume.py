@@ -7,7 +7,14 @@ import pytest
 from pypdf import PdfWriter
 
 from buscador_de_vaga.cli import main
-from buscador_de_vaga.profile import load_candidate_profile
+from buscador_de_vaga.discovery import OpportunityDiscovery
+from buscador_de_vaga.domain import (
+    JobCategory,
+    RequirementStatus,
+    SearchCriteria,
+)
+from buscador_de_vaga.profile import CandidateProfileError, load_candidate_profile
+from buscador_de_vaga.sources.synthetic import SyntheticJobSource
 
 
 def create_synthetic_pdf(path: Path, text: str) -> Path:
@@ -346,3 +353,201 @@ def test_cli_importar_curriculo_sem_chamadas_de_rede(
 
     assert exit_code == 0
     assert output_json.is_file()
+
+
+def test_round_trip_curriculo_para_candidate_profile_preserva_evidencias(
+    tmp_path: Path,
+) -> None:
+    pdf_path = create_synthetic_pdf(
+        tmp_path / "curriculo_completo.pdf",
+        "# Experiencia e Habilidades\nDesenvolvedor com conhecimento em Python, SQL e Git.",
+    )
+    output_json = tmp_path / "candidate-profile.json"
+
+    exit_code = main(
+        [
+            "importar-curriculo",
+            "--file",
+            str(pdf_path),
+            "--output",
+            str(output_json),
+        ]
+    )
+    assert exit_code == 0
+
+    profile = load_candidate_profile(output_json)
+    skill_names = {
+        ev.subject.resolved_value
+        for ev in profile.evidence
+        if ev.subject.kind.value == "skill"
+    }
+
+    assert "python" in skill_names
+    assert "sql" in skill_names
+    assert "git" in skill_names
+
+
+def test_matching_enxerga_evidencias_preservadas_do_curriculo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pdf_path = create_synthetic_pdf(
+        tmp_path / "curriculo_python.pdf",
+        "# Experiencia\nDesenvolvedor Python.",
+    )
+    output_json = tmp_path / "candidate-profile.json"
+
+    # 1. Gera o candidate-profile.json com evidência de Python
+    exit_code_import = main(
+        [
+            "importar-curriculo",
+            "--file",
+            str(pdf_path),
+            "--output",
+            str(output_json),
+        ]
+    )
+    assert exit_code_import == 0
+
+    # 2. Carrega o perfil e valida que evidence NÃO está vazia e contém python
+    profile = load_candidate_profile(output_json)
+    assert len(profile.evidence) > 0
+    assert any(ev.subject.resolved_value == "python" for ev in profile.evidence)
+
+    # 3. Prepara vaga sintética que valoriza Python
+    postings_json = tmp_path / "postings.json"
+    postings_json.write_text(
+        """{
+        "schema_version": 1,
+        "source_name": "synthetic",
+        "query": {
+            "keywords": "desenvolvedor de software",
+            "location": "Brasil"
+        },
+        "postings": [
+            {
+                "external_id": "job-python-001",
+                "title": "Desenvolvedor Python Sênior",
+                "company": "Tech Corp",
+                "location": "Brasil",
+                "source_url": "https://example.invalid/job-python-001",
+                "collected_at": "2026-08-21T12:00:00Z"
+            }
+        ]
+    }""",
+        encoding="utf-8",
+    )
+
+    # 4. Executa a busca via CLI
+    exit_code_search = main(
+        [
+            "--profile",
+            str(output_json),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_json),
+        ]
+    )
+    assert exit_code_search == 0
+    captured = capsys.readouterr()
+    assert "Pontos fortes:" in captured.out
+    assert "skill python" in captured.out
+
+    # 5. Executa OpportunityDiscovery programmaticamente e valida status MET no requisito Python
+    source = SyntheticJobSource.from_file(postings_json)
+    discovery = OpportunityDiscovery(source=source)
+    criteria = SearchCriteria(category=JobCategory.SOFTWARE_DEVELOPMENT, location="Brasil")
+    result = discovery.discover(profile, criteria)
+
+    assert len(result.match_assessments) == 1
+    match = result.match_assessments[0]
+    python_req = next(
+        req
+        for req in match.requirement_assessments
+        if (
+            req.requirement.subject.kind.value == "skill"
+            and req.requirement.subject.value == "python"
+        )
+    )
+    assert python_req.status is RequirementStatus.MET
+
+
+def test_perfil_json_antigo_sem_evidence_continua_valido(tmp_path: Path) -> None:
+    old_json = tmp_path / "old_profile.json"
+    old_json.write_text(
+        """{
+        "schema_version": 1,
+        "id": "candidate-old",
+        "target_categories": ["software-development"]
+    }""",
+        encoding="utf-8",
+    )
+
+    profile = load_candidate_profile(old_json)
+    assert profile.id == "candidate-old"
+    assert profile.target_categories == (JobCategory.SOFTWARE_DEVELOPMENT,)
+    assert profile.evidence == ()
+
+
+def test_evidence_invalida_no_json_gera_candidate_profile_error(
+    tmp_path: Path,
+) -> None:
+    bad_json = tmp_path / "bad_profile.json"
+    bad_json.write_text(
+        """{
+        "schema_version": 1,
+        "id": "candidate-bad",
+        "target_categories": ["software-development"],
+        "evidence": [
+            {
+                "id": "ev-1",
+                "statement": "Teste",
+                "assertion": "INVALID_ASSERTION",
+                "subject": {"kind": "skill", "value": "python"},
+                "provenance": {"origin": "test", "locator": "loc"}
+            }
+        ]
+    }""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CandidateProfileError) as exc_info:
+        load_candidate_profile(bad_json)
+    assert "EvidenceAssertion não reconhecida" in str(exc_info.value)
+
+
+def test_ausencia_de_categoria_falha_consolidacao_mas_permite_review(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # PDF sem termos de JobCategory
+    pdf_path = create_synthetic_pdf(
+        tmp_path / "curriculo_sem_categoria.pdf",
+        "# Informacoes Gerais\nContato: email@example.com. Telefone: 12345.",
+    )
+    output_json = tmp_path / "out.json"
+
+    # 1. Tentar consolidar sem categoria de vaga -> deve falhar com erro acionável
+    exit_code_output = main(
+        [
+            "importar-curriculo",
+            "--file",
+            str(pdf_path),
+            "--output",
+            str(output_json),
+        ]
+    )
+    assert exit_code_output == 2
+    captured_output = capsys.readouterr()
+    assert "Nenhuma categoria profissional pôde ser determinada" in captured_output.err
+    assert "Ação:" in captured_output.err
+    assert not output_json.exists()
+
+    # 2. Executar --review no mesmo arquivo -> deve rodar com sucesso (exit_code == 0)
+    exit_code_review = main(
+        ["importar-curriculo", "--file", str(pdf_path), "--review"]
+    )
+    assert exit_code_review == 0
+    captured_review = capsys.readouterr()
+    assert "CandidateProfileDraft" in captured_review.out
