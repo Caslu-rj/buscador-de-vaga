@@ -23,7 +23,7 @@ PDFs escaneados sem camada de texto serão identificados e rejeitados com uma me
 5. Como Candidate, quero que a extração identifique seções de Experiência, Formação, Habilidades, Idiomas e Projetos, para categorizar minhas informações.
 6. Como Candidate, quero que cada `Evidence` extraída possua `Provenance` indicando de qual seção/linha do currículo a informação foi obtida, para poder auditar o resultado.
 7. Como Candidate, quero visualizar um rascunho (`CandidateProfileDraft`) com todas as evidências sugeridas antes da consolidação final, permitindo aceitar, editar ou rejeitar itens.
-8. Como Candidate, quero poder consolidar o rascunho revisado no arquivo `candidate-profile.json` ativo, para que ele seja usado imediatamente na busca e no `MatchAssessment`.
+8. Como Candidate, quero que a consolidação do rascunho exija um caminho de saída explícito (`--output`), recuse a sobrescrita silenciosa de um perfil existente com erro acionável, e exija a flag `--force` para sobrescrever, além de permitir a revisão prévia com `--review`.
 9. Como Maintainer, quero que a leitura técnica dos arquivos (`ResumeReader`) seja completamente separada da lógica de segmentação e extração (`ResumeParser`), para permitir novos leitores sem afetar o parser.
 10. Como Maintainer, quero testes unitários com fixtures sintéticas em PDF e DOCX (em diretório de testes ou memória), sem depender de arquivos ou dados reais do usuário.
 
@@ -31,23 +31,25 @@ PDFs escaneados sem camada de texto serão identificados e rejeitados com uma me
 
 - **Modular Monolith Local-First:** Toda a solução será implementada no pacote `src/buscador_de_vaga/resume/` em Python 3.12+.
 - **Bibliotecas Selecionadas:**
-  - `pypdf` (>=5.0.0, <6) para extração de texto de PDFs.
-  - `python-docx` (>=1.1.0, <2) para extração de texto de arquivos `.docx`.
+  - `pypdf` (>=6,<7) para extração de texto de PDFs (compatível com a matriz de CI em Python 3.14).
+  - `python-docx` (>=1.1.0,<2) para extração de texto de arquivos `.docx`.
 - **Exceções Tipadas (`src/buscador_de_vaga/resume/exceptions.py`):**
-  - `UnreadablePdfError`: Disparado quando o PDF tem páginas, mas `pypdf` não consegue extrair texto significativo (sinalizando PDF escaneado).
+  - `UnreadablePdfError`: Disparado quando o PDF possui páginas, mas o texto normalizado extraído em todas elas for efetivamente vazio (`.strip() == ""`), sinalizando PDF escaneado. Documentos com pouco texto útil não são automaticamente classificados como escaneados se possuírem conteúdo extraível.
   - `UnsupportedFileFormatError`: Disparado quando a extensão não é `.pdf` nem `.docx`.
   - `EmptyDocumentError`: Disparado quando o arquivo está com 0 bytes.
 - **Seam de Leitura (`ResumeReader`):**
-  - `PdfResumeReader`: Abre o PDF com `pypdf`, itera pelas páginas e concatena o texto. Se a contagem final for inferior a 30 caracteres em documentos com páginas, lança `UnreadablePdfError`.
+  - `PdfResumeReader`: Abre o PDF com `pypdf`, itera pelas páginas e concatena o texto. Se o documento possuir páginas mas o texto normalizado resultante for vazio (`.strip() == ""`), lança `UnreadablePdfError`.
   - `DocxResumeReader`: Abre o DOCX com `python-docx`, itera sobre parágrafos e células de tabelas extraindo texto.
 - **Seam de Extração (`ResumeParser`):**
   - `DeterministicResumeParser`: Segmenta o texto bruto por expressões regulares representando seções tradicionais de currículos (PT-BR e EN).
   - Utiliza os dicionários taxonômicos do repositório (`JobCategory`, `Skill`, `Seniority`, `EntryProgram`, `WorkplaceMode`, `Idiomas`) para localizar ocorrências nas seções.
   - Mapeia cada ocorrência em uma `Evidence` vinculada à sua `Provenance`.
-- **Rascunho e Revisão (`CandidateProfileDraft`):**
+- **Rascunho, Revisão e Consolidação Segura:**
   - O resultado do `ResumeParser` é um `CandidateProfileDraft`.
-  - O rascunho pode ser exportado para JSON ou revisado via subcomando CLI `buscar-vagas importar-curriculo --file <caminho> --review`.
-  - Após a confirmação, o `CandidateProfileDraft` substitui ou atualiza o `CandidateProfile` local (`candidate-profile.json`).
+  - O rascunho pode ser visualizado via subcomando CLI `buscar-vagas importar-curriculo --file <caminho> --review` sem efetuar gravações em disco.
+  - A consolidação exige a indicação explícita do arquivo de saída via `--output <caminho_saida>`.
+  - Caso o arquivo de destino em `--output` já exista, a CLI interrompe com erro acionável ("Arquivo de destino já existe. Utilize --force para sobrescrever.").
+  - A sobrescrita de perfil existente só ocorre se a flag `--force` for explicitamente informada.
 - **Segurança e Versionamento:**
   - O arquivo `.gitignore` bloqueia diretórios `/resumes/`, arquivos `*.pdf` e `*.docx`.
 

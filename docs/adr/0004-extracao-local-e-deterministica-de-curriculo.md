@@ -9,11 +9,11 @@ Para acelerar o preenchimento do `CandidateProfile`, a aplicação precisa impor
 Além disso, a aplicação prioriza baixo consumo de recursos e instalação simplificada sem dependências nativas C/C++ pesadas.
 
 ## Decisão
-Decidimos que a extração de currículos será 100% local e baseada nas bibliotecas Python puras `pypdf` (para PDF) e `python-docx` (para DOCX), aliada a um pipeline de parsing determinístico por regras e taxonomia de domínio.
+Decidimos que a extração de currículos será 100% local e baseada nas bibliotecas Python puras `pypdf` (`pypdf>=6,<7`, compatível com Python 3.14) (para PDF) e `python-docx` (`python-docx>=1.1,<2`) (para DOCX), aliada a um pipeline de parsing determinístico por regras e taxonomia de domínio.
 
 Principais diretrizes:
 1. **`ResumeReader` desacoplado:** A leitura técnica de arquivos PDF (`pypdf`) e DOCX (`python-docx`) é isolada da lógica de extração semântica.
-2. **Detecção de PDFs Escaneados:** Caso o `ResumeReader` detecte que o PDF possui páginas mas nenhuma camada de texto extraível, deve lançar a exceção customizada `UnreadablePdfError`, informando ao usuário que OCR ainda não é suportado neste marco.
+2. **Detecção de PDFs Escaneados:** Caso o `ResumeReader` detecte que o PDF possui páginas, mas o texto normalizado extraído em todas elas for efetivamente vazio (`.strip() == ""`), deve lançar a exceção customizada `UnreadablePdfError`, informando ao usuário que OCR ainda não é suportado neste marco. Um documento com pouco texto útil não deve ser classificado automaticamente como escaneado.
 3. **Parsing Determinístico:** O `ResumeParser` utilizará expressões regulares para segmentação de seções (Experiência, Educação, Habilidades, Idiomas, etc.) e mapeamento de `Evidence` com base nos dicionários taxonômicos do repositório (`JobCategory`, `Skill`, `Seniority`, `EntryProgram`, `Idiomas`).
 4. **Rastreabilidade com `Provenance`:** Cada evidência extraída incluirá o local de origem no documento (ex: `resume:curriculo.pdf#section:skills`).
 

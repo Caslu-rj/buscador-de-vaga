@@ -23,7 +23,7 @@ Diretrizes inegociáveis:
 | `PyMuPDF` (`fitz`) | AGPL / Comercial | ~30 MB / C++ wheels | Binding C | Muito rápida. | Licença AGPL incompatível com MIT e binários C pesados. | Descartada por licença/tamanho. |
 | `pdfminer.six` | MIT | ~10 MB | Pure Python | Análise detalhada do AST do PDF. | API verbosa e lenta para leitura simples. | Descartada por complexidade. |
 
-**Conclusão para PDF:** `pypdf` (`pypdf>=5.0.0,<6`) é a escolha ideal. É leve, desenvolvida em Python puro, mantida ativamente e permite extrair páginas com `page.extract_text()`. Se `extract_text()` retornar texto vazio ou com contagem insignificante de caracteres em um PDF de várias páginas, sinaliza-se `UnreadablePdfError` ("PDF sem camada de texto detectável. OCR ainda não é suportado.").
+**Conclusão para PDF:** `pypdf` (`pypdf>=6,<7`) é a escolha ideal. É leve, desenvolvida em Python puro, mantida ativamente (com suporte oficial a Python 3.14) e permite extrair páginas com `page.extract_text()`. Se o documento possuir páginas, mas o texto normalizado extraído for efetivamente vazio (`.strip() == ""`), dispara-se `UnreadablePdfError` ("PDF sem camada de texto detectável. OCR ainda não é suportado."). Documentos com pouco texto útil não são classificados automaticamente como escaneados a menos que o conteúdo extraído seja totalmente vazio.
 
 ### 2.2 Extração de Texto em DOCX
 

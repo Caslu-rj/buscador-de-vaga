@@ -60,9 +60,9 @@ class ResumeReader(Protocol):
         ...
 ```
 
-- **`PdfResumeReader`**: Utiliza `pypdf.PdfReader` para extrair o texto de todas as páginas.
-  - *Verificação de OCR:* Se a contagem total de caracteres extraídos for inferior a um limite mínimo (ex: < 30 caracteres para um documento não vazio), lança `UnreadablePdfError("PDF sem camada de texto detectável. OCR ainda não é suportado.")`.
-- **`DocxResumeReader`**: Utiliza `python-docx` (`docx.Document`) para percorrer parágrafos e tabelas, extraindo o texto de forma estruturada.
+- **`PdfResumeReader`**: Utiliza `pypdf.PdfReader` (`pypdf>=6,<7`, compatível com Python 3.14) para extrair o texto de todas as páginas.
+  - *Verificação de OCR:* Se o PDF possui páginas, mas o texto normalizado extraído em todas elas for efetivamente vazio (`.strip() == ""`), lança `UnreadablePdfError("PDF sem camada de texto detectável. OCR ainda não é suportado.")`. Um documento com pouco texto não é classificado automaticamente como escaneado desde que possua conteúdo extraível.
+- **`DocxResumeReader`**: Utiliza `python-docx` (`python-docx>=1.1,<2`) para percorrer parágrafos e tabelas, extraindo o texto de forma estruturada.
 - **Validação de formato:** Arquivos com extensões não suportadas lançam `UnsupportedFileFormatError`.
 
 ### 2. `ResumeParser` (Seam de Interpretação e Extração)
@@ -138,5 +138,7 @@ src/buscador_de_vaga/
    - Geração correta de `Provenance` para cada `Evidence`.
    - Classificação de seções reconhecidas vs não reconhecidas.
 3. **Testes de Integração da CLI (`test_cli_resume.py`):**
-   - Comando `importar-curriculo --file curriculo.pdf --review` exibe o rascunho formatado.
-   - Salvamento e consolidação do rascunho em `candidate-profile.json`.
+   - Comando `importar-curriculo --file curriculo.pdf --review` exibe o rascunho formatado sem alterar o disco.
+   - Comando `importar-curriculo --file curriculo.pdf --output candidate-profile.json` exige o caminho de saída explícito (`--output`).
+   - Se `candidate-profile.json` já existir, a CLI aborta com erro acionável impedindo sobrescrita silenciosa.
+   - A flag `--force` permite a sobrescrita explícita do arquivo de perfil existente.
