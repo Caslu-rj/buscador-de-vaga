@@ -9,6 +9,7 @@ from buscador_de_vaga.discovery import (
 )
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    EntryProgram,
     Evidence,
     EvidenceAssertion,
     JobCategory,
@@ -17,6 +18,8 @@ from buscador_de_vaga.domain import (
     RequirementKind,
     RequirementSubject,
     SearchCriteria,
+    Seniority,
+    WorkplaceMode,
 )
 
 
@@ -34,6 +37,7 @@ def _discover(
     postings: tuple[JobPosting, ...],
     *,
     profile: CandidateProfile | None = None,
+    limit: int = 10,
 ) -> DiscoveryResult:
     candidate_profile = profile or CandidateProfile(
         id="candidate-example",
@@ -42,11 +46,50 @@ def _discover(
     criteria = SearchCriteria(
         category=JobCategory.SOFTWARE_DEVELOPMENT,
         location="Brasil",
-        limit=10,
+        limit=limit,
     )
     return OpportunityDiscovery(source=StubJobSource(postings)).discover(
         candidate_profile,
         criteria,
+    )
+
+
+def _candidate_evidence(
+    *,
+    evidence_id: str,
+    subject: RequirementSubject,
+    statement: str,
+    assertion: EvidenceAssertion,
+    locator: str,
+) -> Evidence:
+    return Evidence(
+        id=evidence_id,
+        subject=subject,
+        statement=statement,
+        assertion=assertion,
+        provenance=Provenance(origin="candidate-profile", locator=locator),
+    )
+
+
+def _synthetic_posting(
+    *,
+    external_id: str = "job-001",
+    title: str = "Software Engineer",
+    company: str | None = "ACME Tecnologia",
+    location: str | None = None,
+    summary: str | None = None,
+    source_updated_at: datetime | None = None,
+) -> JobPosting:
+    return JobPosting(
+        source_name="synthetic",
+        external_id=external_id,
+        title=title,
+        company=company,
+        location=location,
+        source_url=f"https://jobs.example.invalid/{external_id}",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary=summary,
+        source_updated_at=source_updated_at,
     )
 
 
@@ -435,7 +478,7 @@ def test_discover_expoe_match_assessment_versionado_com_quatro_dimensoes() -> No
         assessment.fit_score.value,
         assessment.fit_score.evidence_coverage,
         assessment.fit_score.policy_version,
-    ) == (40, 40, "match-v1")
+    ) == (40, 40, "match-v2")
     assert tuple(
         (
             breakdown.dimension.value,
@@ -460,10 +503,7 @@ def test_discover_expoe_match_assessment_versionado_com_quatro_dimensoes() -> No
         category_assessment.awarded_points,
         category_assessment.covered_points,
     ) == ("job-category", "software-development", "met", 40, 40, 40)
-    assert (
-        category_assessment.requirement.subject.value
-        is JobCategory.SOFTWARE_DEVELOPMENT
-    )
+    assert category_assessment.requirement.subject.value is JobCategory.SOFTWARE_DEVELOPMENT
     assert tuple(
         (
             evidence.assertion.value,
@@ -528,8 +568,7 @@ def test_discover_mantem_categorias_ambiguas_como_unknown() -> None:
                         value="software-development",
                     ),
                     statement=(
-                        "CandidateProfile declara software-development em "
-                        "target_categories."
+                        "CandidateProfile declara software-development em target_categories."
                     ),
                     assertion=EvidenceAssertion.SUPPORTS,
                     provenance=Provenance(
@@ -680,9 +719,10 @@ def test_discover_classifica_skill_sustentada_como_met() -> None:
     assert skill_assessment.requirement.provenance == (
         Provenance(origin="synthetic", locator="job-001#summary"),
     )
-    assert tuple(
-        item.requirement.subject.kind.value for item in assessment.strengths
-    ) == ("job-category", "skill")
+    assert tuple(item.requirement.subject.kind.value for item in assessment.strengths) == (
+        "job-category",
+        "skill",
+    )
     assert assessment.skill_gaps == ()
     assert assessment.unknown_requirements == ()
 
@@ -732,9 +772,9 @@ def test_discover_classifica_skill_contradita_como_unmet() -> None:
     skill_gap = assessment.skill_gaps[0]
     assert skill_gap.requirement.subject.value == "sql"
     assert skill_gap.evidence == (sql_evidence,)
-    assert tuple(
-        item.requirement.subject.kind.value for item in assessment.strengths
-    ) == ("job-category",)
+    assert tuple(item.requirement.subject.kind.value for item in assessment.strengths) == (
+        "job-category",
+    )
     assert assessment.unknown_requirements == ()
 
 
@@ -765,10 +805,7 @@ def test_discover_exige_contexto_de_requisito_na_mesma_clausula_da_skill() -> No
         location=None,
         source_url="https://jobs.example.invalid/job-001",
         collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
-        summary=(
-            "Requisitos: conhecimento em Python. "
-            "Produto desenvolvido em SQL."
-        ),
+        summary=("Requisitos: conhecimento em Python. Produto desenvolvido em SQL."),
     )
 
     assessment = _discover((posting,), profile=profile).match_assessments[0]
@@ -873,9 +910,9 @@ def test_discover_classifica_evidence_ambigua_como_unknown() -> None:
     assert unknown.requirement.subject.value == "python"
     assert unknown.status.value == "unknown"
     assert unknown.evidence == (supports_python, contradicts_python)
-    assert tuple(
-        item.requirement.subject.kind.value for item in assessment.strengths
-    ) == ("job-category",)
+    assert tuple(item.requirement.subject.kind.value for item in assessment.strengths) == (
+        "job-category",
+    )
     assert assessment.skill_gaps == ()
 
 
@@ -944,12 +981,10 @@ def test_discover_distribui_pontos_e_cobertura_entre_skills_explicitas() -> None
         ("python", "met", 8, 8, 8),
         ("sql", "unmet", 8, 0, 8),
     )
-    assert tuple(gap.requirement.subject.value for gap in assessment.skill_gaps) == (
-        "sql",
+    assert tuple(gap.requirement.subject.value for gap in assessment.skill_gaps) == ("sql",)
+    assert tuple(item.requirement.subject.value for item in assessment.unknown_requirements) == (
+        "docker",
     )
-    assert tuple(
-        item.requirement.subject.value for item in assessment.unknown_requirements
-    ) == ("docker",)
 
 
 def test_discover_avalia_seniority_explicitamente_sustentada() -> None:
@@ -1004,9 +1039,10 @@ def test_discover_avalia_seniority_explicitamente_sustentada() -> None:
         seniority_assessment.status.value,
         seniority_assessment.evidence,
     ) == ("junior", "met", (junior_evidence,))
-    assert tuple(
-        item.requirement.subject.kind.value for item in assessment.strengths
-    ) == ("job-category", "seniority")
+    assert tuple(item.requirement.subject.kind.value for item in assessment.strengths) == (
+        "job-category",
+        "seniority",
+    )
 
 
 def test_discover_mantem_senioridades_conflitantes_como_unknown() -> None:
@@ -1157,9 +1193,11 @@ def test_discover_avalia_localizacao_e_workplace_mode_sustentados() -> None:
         (location_evidence,),
         (hybrid_evidence,),
     )
-    assert tuple(
-        item.requirement.subject.kind.value for item in assessment.strengths
-    ) == ("job-category", "location", "workplace-mode")
+    assert tuple(item.requirement.subject.kind.value for item in assessment.strengths) == (
+        "job-category",
+        "location",
+        "workplace-mode",
+    )
 
 
 def test_discover_nao_mistura_modalidade_no_assunto_de_localizacao() -> None:
@@ -1359,9 +1397,679 @@ def test_discover_produz_match_assessments_deterministicos() -> None:
         )
         for assessment in direct_result.match_assessments
     ) == (
-        ("alpha:a-001", 85, 85, "match-v1"),
-        ("zeta:z-001", 60, 60, "match-v1"),
+        ("alpha:a-001", 85, 85, "match-v2"),
+        ("zeta:z-001", 60, 60, "match-v2"),
     )
+
+
+def test_discover_exclui_blocking_unmet_sem_alterar_fit_score() -> None:
+    docker_evidence = _candidate_evidence(
+        evidence_id="self-assessment-docker",
+        subject=RequirementSubject.skill("docker"),
+        statement="Candidate ainda não possui conhecimento de Docker.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/docker",
+    )
+    python_evidence = _candidate_evidence(
+        evidence_id="self-assessment-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Candidate ainda não possui conhecimento de Python.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/python",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(python_evidence, docker_evidence),
+    )
+    posting = _synthetic_posting(
+        summary="Requisito obrigatório: Docker. Python é desejável.",
+    )
+
+    result = _discover((posting,), profile=profile)
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    skill_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SKILL
+    )
+    assert tuple(
+        (
+            item.requirement.subject.value,
+            item.requirement.importance.value,
+            item.status.value,
+        )
+        for item in skill_assessments
+    ) == (
+        ("docker", "blocking", "unmet"),
+        ("python", "preferred", "unmet"),
+    )
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 65)
+    assert assessment.eligibility_status.value == "ineligible"
+    assert len(assessment.blocking_requirements) == 1
+    assert assessment.blocking_requirements[0].assessment == skill_assessments[0]
+    assert assessment.possible_blockers == ()
+    assert result.opportunities == (opportunity,)
+    assert result.match_assessments == (assessment,)
+    assert result.shortlist.items == ()
+
+
+def test_discover_mantem_blocking_unknown_como_possible_blocker() -> None:
+    posting = _synthetic_posting(
+        summary="Requisito obrigatório: Docker.",
+    )
+
+    result = _discover((posting,))
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    docker_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value == "docker"
+    )
+    assert (
+        docker_assessment.requirement.importance.value,
+        docker_assessment.status.value,
+        docker_assessment.evidence,
+    ) == ("blocking", "unknown", ())
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 40)
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert len(assessment.possible_blockers) == 1
+    assert assessment.possible_blockers[0].assessment == docker_assessment
+    assert result.shortlist.items == (opportunity,)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "Conhecimento em Docker não é obrigatório.",
+        "Conhecimentos não são obrigatórios: Docker.",
+    ),
+)
+def test_discover_nao_trata_requisito_negado_como_blocking(summary: str) -> None:
+    docker_evidence = _candidate_evidence(
+        evidence_id="self-assessment-docker",
+        subject=RequirementSubject.skill("docker"),
+        statement="Candidate ainda não possui conhecimento de Docker.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/docker",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(docker_evidence,),
+    )
+    posting = _synthetic_posting(summary=summary)
+
+    result = _discover((posting,), profile=profile)
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    docker_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value == "docker"
+    )
+    assert (
+        docker_assessment.requirement.importance.value,
+        docker_assessment.status.value,
+    ) == ("unknown", "unmet")
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert assessment.possible_blockers[0].assessment == docker_assessment
+    assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_aplica_importancia_blocking_ao_workplace_mode() -> None:
+    remote_evidence = _candidate_evidence(
+        evidence_id="availability-remote",
+        subject=RequirementSubject.workplace_mode(WorkplaceMode.REMOTE),
+        statement="Candidate não possui disponibilidade para trabalho remoto.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="availability/workplace-mode/remote",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(remote_evidence,),
+    )
+    posting = _synthetic_posting(summary="Trabalho remoto obrigatório.")
+
+    result = _discover((posting,), profile=profile)
+
+    assessment = result.match_assessments[0]
+    remote_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value is WorkplaceMode.REMOTE
+    )
+    assert (
+        remote_assessment.requirement.importance.value,
+        remote_assessment.status.value,
+    ) == ("blocking", "unmet")
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 55)
+    assert assessment.eligibility_status.value == "ineligible"
+    assert assessment.blocking_requirements[0].assessment == remote_assessment
+    assert result.shortlist.items == ()
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "Python obrigatório para trabalho remoto.",
+        "Trabalho remoto não é obrigatório.",
+    ),
+)
+def test_discover_nao_classifica_workplace_ambiguo_como_blocking(
+    summary: str,
+) -> None:
+    remote_evidence = _candidate_evidence(
+        evidence_id="availability-remote",
+        subject=RequirementSubject.workplace_mode(WorkplaceMode.REMOTE),
+        statement="Candidate não possui disponibilidade para trabalho remoto.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="availability/workplace-mode/remote",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(remote_evidence,),
+    )
+    posting = _synthetic_posting(summary=summary)
+
+    result = _discover((posting,), profile=profile)
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    remote_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value is WorkplaceMode.REMOTE
+    )
+    assert (
+        remote_assessment.requirement.importance.value,
+        remote_assessment.status.value,
+    ) == ("unknown", "unmet")
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert remote_assessment in tuple(
+        blocker.assessment for blocker in assessment.possible_blockers
+    )
+    assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_trata_lista_entry_level_unmet_como_possible_blocker() -> None:
+    internship_evidence = _candidate_evidence(
+        evidence_id="career-goal-internship",
+        subject=RequirementSubject.entry_program(EntryProgram.INTERNSHIP),
+        statement="Candidate busca oportunidades de estágio.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        locator="career-goals/entry-program",
+    )
+    docker_evidence = _candidate_evidence(
+        evidence_id="self-assessment-docker",
+        subject=RequirementSubject.skill("docker"),
+        statement="Candidate ainda não possui conhecimento de Docker.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/docker",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(docker_evidence, internship_evidence),
+    )
+    posting = _synthetic_posting(
+        title="Estagiário Desenvolvedor",
+        summary="Requisitos: Docker.",
+    )
+
+    result = _discover((posting,), profile=profile)
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    docker_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value == "docker"
+    )
+    assert (
+        docker_assessment.requirement.importance.value,
+        docker_assessment.status.value,
+    ) == ("unknown", "unmet")
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (60, 85)
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert len(assessment.possible_blockers) == 1
+    assert assessment.possible_blockers[0].assessment == docker_assessment
+    assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_nao_cria_blocker_para_requirement_preferred_unmet() -> None:
+    docker_evidence = _candidate_evidence(
+        evidence_id="self-assessment-docker",
+        subject=RequirementSubject.skill("docker"),
+        statement="Candidate ainda não possui conhecimento de Docker.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/docker",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(docker_evidence,),
+    )
+    posting = _synthetic_posting(summary="Conhecimento em Docker é desejável.")
+
+    result = _discover((posting,), profile=profile)
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    docker_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value == "docker"
+    )
+    assert (
+        docker_assessment.requirement.importance.value,
+        docker_assessment.status.value,
+    ) == ("preferred", "unmet")
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+    ) == (40, 65)
+    assert assessment.eligibility_status.value == "eligible"
+    assert assessment.blocking_requirements == ()
+    assert assessment.possible_blockers == ()
+    assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_mantem_importancia_conflitante_como_possible_blocker() -> None:
+    docker_evidence = _candidate_evidence(
+        evidence_id="self-assessment-docker",
+        subject=RequirementSubject.skill("docker"),
+        statement="Candidate ainda não possui conhecimento de Docker.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/docker",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(docker_evidence,),
+    )
+    blocking_posting = JobPosting(
+        source_name="alpha",
+        external_id="a-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/shared",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        summary="Requisito obrigatório: Docker.",
+    )
+    preferred_posting = JobPosting(
+        source_name="beta",
+        external_id="b-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/shared",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+        summary="Docker é desejável.",
+    )
+
+    result = _discover(
+        (preferred_posting, blocking_posting),
+        profile=profile,
+    )
+
+    opportunity = result.opportunities[0]
+    assessment = result.match_assessments[0]
+    docker_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.value == "docker"
+    )
+    assert (
+        docker_assessment.requirement.importance.value,
+        docker_assessment.status.value,
+    ) == ("unknown", "unmet")
+    assert docker_assessment.requirement.provenance == (
+        Provenance(origin="alpha", locator="a-001#summary"),
+        Provenance(origin="beta", locator="b-001#summary"),
+    )
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert assessment.possible_blockers[0].assessment == docker_assessment
+    assert result.shortlist.items == (opportunity,)
+
+
+def test_discover_nao_propaga_marcador_blocking_ambiguo_entre_skills() -> None:
+    python_evidence = _candidate_evidence(
+        evidence_id="self-assessment-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Candidate ainda não possui conhecimento de Python.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/python",
+    )
+    sql_evidence = _candidate_evidence(
+        evidence_id="self-assessment-sql",
+        subject=RequirementSubject.skill("sql"),
+        statement="Candidate ainda não possui conhecimento de SQL.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/sql",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(sql_evidence, python_evidence),
+    )
+    posting = _synthetic_posting(summary="Python obrigatório e SQL.")
+
+    result = _discover((posting,), profile=profile)
+
+    assessment = result.match_assessments[0]
+    skill_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SKILL
+    )
+    assert tuple(
+        (
+            item.requirement.subject.value,
+            item.requirement.importance.value,
+            item.status.value,
+        )
+        for item in skill_assessments
+    ) == (
+        ("python", "unknown", "unmet"),
+        ("sql", "unknown", "unmet"),
+    )
+    assert assessment.eligibility_status.value == "uncertain"
+    assert assessment.blocking_requirements == ()
+    assert (
+        tuple(blocker.assessment for blocker in assessment.possible_blockers) == skill_assessments
+    )
+    assert result.shortlist.items == result.opportunities
+
+
+def test_discover_aplica_header_blocking_coletivo_a_todas_as_skills() -> None:
+    python_evidence = _candidate_evidence(
+        evidence_id="self-assessment-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Candidate ainda não possui conhecimento de Python.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/python",
+    )
+    sql_evidence = _candidate_evidence(
+        evidence_id="self-assessment-sql",
+        subject=RequirementSubject.skill("sql"),
+        statement="Candidate ainda não possui conhecimento de SQL.",
+        assertion=EvidenceAssertion.CONTRADICTS,
+        locator="self-assessment/sql",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(python_evidence, sql_evidence),
+    )
+    posting = _synthetic_posting(summary="Requisitos obrigatórios: Python e SQL.")
+
+    result = _discover((posting,), profile=profile)
+
+    assessment = result.match_assessments[0]
+    skill_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SKILL
+    )
+    assert tuple(
+        (
+            item.requirement.subject.value,
+            item.requirement.importance.value,
+            item.status.value,
+        )
+        for item in skill_assessments
+    ) == (
+        ("python", "blocking", "unmet"),
+        ("sql", "blocking", "unmet"),
+    )
+    assert assessment.eligibility_status.value == "ineligible"
+    assert (
+        tuple(blocker.assessment for blocker in assessment.blocking_requirements)
+        == skill_assessments
+    )
+    assert assessment.possible_blockers == ()
+    assert result.shortlist.items == ()
+
+
+def test_discover_ordena_shortlist_por_status_score_data_e_id() -> None:
+    python_evidence = Evidence(
+        id="project-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Projeto desenvolvido em Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="projects/python",
+        ),
+    )
+    junior_evidence = Evidence(
+        id="career-goal-junior",
+        subject=RequirementSubject.seniority(Seniority.JUNIOR),
+        statement="Candidate busca posições de nível júnior.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        provenance=Provenance(
+            origin="candidate-profile",
+            locator="career-goals/seniority",
+        ),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(junior_evidence, python_evidence),
+    )
+
+    def posting(
+        external_id: str,
+        *,
+        title: str = "Software Engineer",
+        summary: str | None = None,
+        source_updated_at: datetime | None = None,
+    ) -> JobPosting:
+        return JobPosting(
+            source_name="rank",
+            external_id=external_id,
+            title=title,
+            company=f"Company {external_id}",
+            location=None,
+            source_url=f"https://jobs.example.invalid/{external_id}",
+            collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+            summary=summary,
+            source_updated_at=source_updated_at,
+        )
+
+    postings = (
+        posting(
+            "uncertain-40",
+            summary="Requisito obrigatório: Docker.",
+            source_updated_at=datetime(2026, 8, 23, 12, tzinfo=UTC),
+        ),
+        posting("beta"),
+        posting(
+            "updated-old",
+            source_updated_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+        ),
+        posting(
+            "uncertain-60",
+            title="Software Engineer Júnior",
+            summary="Requisito obrigatório: Docker.",
+            source_updated_at=datetime(2026, 8, 24, 12, tzinfo=UTC),
+        ),
+        posting("alpha"),
+        posting(
+            "score-65",
+            summary="Python é desejável.",
+            source_updated_at=datetime(2026, 8, 19, 12, tzinfo=UTC),
+        ),
+        posting(
+            "updated-new",
+            source_updated_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        ),
+    )
+
+    direct_result = _discover(postings, profile=profile)
+    reversed_result = _discover(tuple(reversed(postings)), profile=profile)
+
+    expected_ids = (
+        "rank:score-65",
+        "rank:updated-new",
+        "rank:updated-old",
+        "rank:alpha",
+        "rank:beta",
+        "rank:uncertain-60",
+        "rank:uncertain-40",
+    )
+    assert tuple(item.id for item in direct_result.shortlist.items) == expected_ids
+    assert tuple(item.id for item in reversed_result.shortlist.items) == expected_ids
+
+
+def test_discover_trata_atualizacao_sem_timezone_como_desconhecida() -> None:
+    naive_newer = JobPosting(
+        source_name="rank",
+        external_id="naive-newer",
+        title="Software Engineer",
+        company="Naive Company",
+        location=None,
+        source_url="https://jobs.example.invalid/naive-newer",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        source_updated_at=datetime(2026, 8, 22, 12),
+    )
+    aware_older = JobPosting(
+        source_name="rank",
+        external_id="aware-older",
+        title="Software Engineer",
+        company="Aware Company",
+        location=None,
+        source_url="https://jobs.example.invalid/aware-older",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        source_updated_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+    )
+
+    result = _discover((naive_newer, aware_older))
+
+    assert tuple(item.id for item in result.shortlist.items) == (
+        "rank:aware-older",
+        "rank:naive-newer",
+    )
+
+
+def test_discover_ordena_por_atualizacao_mais_recente_dos_postings_consolidados() -> None:
+    consolidated_old = JobPosting(
+        source_name="rank",
+        external_id="consolidated",
+        title="Software Engineer",
+        company="Consolidated Company",
+        location=None,
+        source_url="https://a.example.invalid/consolidated",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        source_updated_at=datetime(2026, 8, 19, 12, tzinfo=UTC),
+    )
+    consolidated_new = JobPosting(
+        source_name="rank",
+        external_id="consolidated",
+        title="Software Engineer",
+        company="Consolidated Company",
+        location=None,
+        source_url="https://z.example.invalid/consolidated",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+        source_updated_at=datetime(2026, 8, 22, 12, tzinfo=UTC),
+    )
+    single = JobPosting(
+        source_name="rank",
+        external_id="single",
+        title="Software Engineer",
+        company="Single Company",
+        location=None,
+        source_url="https://jobs.example.invalid/single",
+        collected_at=datetime(2026, 8, 21, 14, tzinfo=UTC),
+        source_updated_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+
+    result = _discover((consolidated_old, single, consolidated_new))
+
+    assert tuple(item.id for item in result.shortlist.items) == (
+        "rank:consolidated",
+        "rank:single",
+    )
+    assert result.shortlist.items[0].postings == (
+        consolidated_old,
+        consolidated_new,
+    )
+
+
+def test_discover_limita_shortlist_sem_truncar_resultado_auditavel() -> None:
+    postings = tuple(
+        JobPosting(
+            source_name="synthetic",
+            external_id=external_id,
+            title="Software Engineer",
+            company=f"Company {external_id}",
+            location=None,
+            source_url=f"https://jobs.example.invalid/{external_id}",
+            collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+        )
+        for external_id in ("charlie", "bravo", "alpha")
+    )
+
+    result = _discover(postings, limit=2)
+
+    assert result.postings == postings
+    assert tuple(item.id for item in result.opportunities) == (
+        "synthetic:alpha",
+        "synthetic:bravo",
+        "synthetic:charlie",
+    )
+    assert tuple(item.opportunity_id for item in result.match_assessments) == (
+        "synthetic:alpha",
+        "synthetic:bravo",
+        "synthetic:charlie",
+    )
+    assert tuple(item.id for item in result.shortlist.items) == (
+        "synthetic:alpha",
+        "synthetic:bravo",
+    )
+
+
+def test_discover_expoe_versao_da_politica_de_matching_e_ordering() -> None:
+    posting = JobPosting(
+        source_name="synthetic",
+        external_id="job-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location=None,
+        source_url="https://jobs.example.invalid/job-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+
+    result = _discover((posting,))
+
+    assert result.policy_version == "match-v2"
+    assert result.match_assessments[0].fit_score.policy_version == result.policy_version
 
 
 def test_discover_rejeita_categoria_que_nao_pertence_ao_candidate_profile() -> None:

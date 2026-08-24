@@ -40,9 +40,7 @@ class WorkplaceMode(StrEnum):
     REMOTE = "remote"
 
 
-type RequirementSubjectValue = (
-    JobCategory | EntryProgram | Seniority | WorkplaceMode | str
-)
+type RequirementSubjectValue = JobCategory | EntryProgram | Seniority | WorkplaceMode | str
 
 
 class EvidenceAssertion(StrEnum):
@@ -66,6 +64,14 @@ class RequirementStatus(StrEnum):
     MET = "met"
     UNMET = "unmet"
     UNKNOWN = "unknown"
+
+
+class EligibilityStatus(StrEnum):
+    """Conclusão de elegibilidade separada do FitScore."""
+
+    ELIGIBLE = "eligible"
+    INELIGIBLE = "ineligible"
+    UNCERTAIN = "uncertain"
 
 
 class FitDimension(StrEnum):
@@ -262,6 +268,20 @@ class RequirementAssessment:
 
 
 @dataclass(frozen=True, slots=True)
+class BlockingRequirement:
+    """Requirement impeditivo comprovadamente não atendido."""
+
+    assessment: RequirementAssessment
+
+
+@dataclass(frozen=True, slots=True)
+class PossibleBlocker:
+    """Requirement que ainda pode impedir a Opportunity."""
+
+    assessment: RequirementAssessment
+
+
+@dataclass(frozen=True, slots=True)
 class FitBreakdown:
     """Parcela observável do FitScore para uma FitDimension."""
 
@@ -324,6 +344,41 @@ class MatchAssessment:
             for assessment in self.requirement_assessments
             if assessment.status is RequirementStatus.UNKNOWN
         )
+
+    @property
+    def blocking_requirements(self) -> tuple[BlockingRequirement, ...]:
+        return tuple(
+            BlockingRequirement(assessment=assessment)
+            for assessment in self.requirement_assessments
+            if assessment.requirement.importance is RequirementImportance.BLOCKING
+            and assessment.status is RequirementStatus.UNMET
+            and bool(assessment.evidence)
+            and all(
+                evidence.assertion is EvidenceAssertion.CONTRADICTS
+                for evidence in assessment.evidence
+            )
+        )
+
+    @property
+    def possible_blockers(self) -> tuple[PossibleBlocker, ...]:
+        return tuple(
+            PossibleBlocker(assessment=assessment)
+            for assessment in self.requirement_assessments
+            if assessment.status is not RequirementStatus.MET
+            and assessment.requirement.importance is not RequirementImportance.PREFERRED
+            and not (
+                assessment.requirement.importance is RequirementImportance.BLOCKING
+                and assessment.status is RequirementStatus.UNMET
+            )
+        )
+
+    @property
+    def eligibility_status(self) -> EligibilityStatus:
+        if self.blocking_requirements:
+            return EligibilityStatus.INELIGIBLE
+        if self.possible_blockers:
+            return EligibilityStatus.UNCERTAIN
+        return EligibilityStatus.ELIGIBLE
 
 
 @dataclass(frozen=True, slots=True)
