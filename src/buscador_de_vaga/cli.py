@@ -1,6 +1,7 @@
 """CLI local para descobrir e apresentar oportunidades."""
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -21,7 +22,20 @@ from buscador_de_vaga.domain import (
     JobCategory,
     SearchCriteria,
 )
-from buscador_de_vaga.profile import CandidateProfileError, load_candidate_profile
+from buscador_de_vaga.profile import (
+    CandidateProfileError,
+    load_candidate_profile,
+    serialize_candidate_profile,
+)
+from buscador_de_vaga.resume import (
+    CandidateProfileDraft,
+    DeterministicResumeParser,
+    EmptyDocumentError,
+    ResumeReadError,
+    UnreadablePdfError,
+    UnsupportedFileFormatError,
+    read_resume,
+)
 from buscador_de_vaga.sources.jooble import JoobleJobSource
 from buscador_de_vaga.sources.synthetic import SyntheticJobSource, SyntheticSourceError
 
@@ -33,6 +47,10 @@ def main(
     environ: Mapping[str, str] | None = None,
 ) -> int:
     """Executa a CLI e devolve um código adequado para o processo."""
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list and args_list[0] == "importar-curriculo":
+        return _handle_importar_curriculo(args_list[1:])
+
     parser = _build_parser()
     arguments = parser.parse_args(argv)
 
@@ -242,6 +260,185 @@ def _positive_integer(value: str) -> int:
 
 def _safe_terminal_text(value: str) -> str:
     return "".join(character if character.isprintable() else " " for character in value)
+
+
+def _build_importar_curriculo_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="buscar-vagas importar-curriculo",
+        description="Importa, analisa e consolida um currículo em um CandidateProfile JSON.",
+    )
+    parser.add_argument(
+        "--file",
+        required=True,
+        help="Caminho do arquivo de currículo (.pdf ou .docx).",
+    )
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Exibe no terminal a revisão estruturada (CandidateProfileDraft) sem salvar arquivos.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Caminho do arquivo JSON de saída para salvar o CandidateProfile gerado.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Sobrescreve o arquivo de saída (--output) caso ele já exista.",
+    )
+    return parser
+
+
+def _handle_importar_curriculo(args: list[str]) -> int:
+    parser = _build_importar_curriculo_parser()
+    try:
+        arguments = parser.parse_args(args)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else 2
+
+    if not arguments.review and not arguments.output:
+        print("Erro: Deve informar --output <caminho> ou --review.", file=sys.stderr)
+        print(
+            "Ação: informe --output para salvar o perfil ou --review para inspecionar no terminal.",
+            file=sys.stderr,
+        )
+        return 2
+
+    output_path: Path | None = Path(arguments.output) if arguments.output else None
+    if output_path is not None and output_path.exists() and not arguments.force:
+        print(f"Erro: O arquivo de saída '{output_path}' já existe.", file=sys.stderr)
+        print(
+            "Ação: especifique outro caminho ou use --force para sobrescrever.",
+            file=sys.stderr,
+        )
+        return 2
+
+    file_path = Path(arguments.file)
+    if not file_path.is_file():
+        print(f"Erro: Arquivo não encontrado: {file_path}", file=sys.stderr)
+        print(
+            "Ação: verifique se o caminho especificado para --file está correto.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        raw_resume = read_resume(file_path)
+        parser_instance = DeterministicResumeParser()
+        draft = parser_instance.parse(raw_resume)
+    except UnreadablePdfError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        print(
+            "Ação: selecione um PDF com camada de texto exportada ou converta o "
+            "documento para texto selecionável (OCR ainda não suportado).",
+            file=sys.stderr,
+        )
+        return 2
+    except UnsupportedFileFormatError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        print(
+            "Ação: forneça um arquivo no formato PDF (.pdf) ou Word (.docx).",
+            file=sys.stderr,
+        )
+        return 2
+    except EmptyDocumentError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        print(
+            "Ação: verifique se o arquivo do currículo contém texto e "
+            "não está zerado ou em branco.",
+            file=sys.stderr,
+        )
+        return 2
+    except ResumeReadError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        print(
+            "Ação: verifique a integridade do arquivo de currículo e suas permissões de leitura.",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as error:
+        print(f"Erro ao processar currículo: {error}", file=sys.stderr)
+        print(
+            "Ação: verifique o arquivo de entrada e tente novamente.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if arguments.review:
+        _present_draft_review(draft)
+
+    if output_path is not None:
+        categories_set: set[str] = set()
+        for draft_ev in draft.suggested_evidences:
+            if draft_ev.suggested_field == "target_categories":
+                if isinstance(draft_ev.evidence.subject.value, JobCategory):
+                    categories_set.add(draft_ev.evidence.subject.value.value)
+                elif isinstance(draft_ev.evidence.subject.value, str):
+                    categories_set.add(draft_ev.evidence.subject.value)
+
+        if not categories_set:
+            print(
+                "Erro: Nenhuma categoria profissional pôde ser determinada "
+                "automaticamente no currículo.",
+                file=sys.stderr,
+            )
+            print(
+                "Ação: inspecione o currículo com --review ou adicione seções "
+                "de experiência/habilidades correspondentes a uma JobCategory.",
+                file=sys.stderr,
+            )
+            return 2
+
+        ordered_categories = tuple(
+            JobCategory(cat) for cat in sorted(categories_set)
+        )
+        evidences = tuple(item.evidence for item in draft.suggested_evidences)
+        profile_obj = CandidateProfile(
+            id=f"candidate-{file_path.stem}",
+            target_categories=ordered_categories,
+            evidence=evidences,
+        )
+        profile_dict = serialize_candidate_profile(profile_obj)
+
+        try:
+            output_path.write_text(
+                json.dumps(profile_dict, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as error:
+            print(f"Erro ao salvar arquivo de saída: {error}", file=sys.stderr)
+            print(
+                "Ação: verifique as permissões de escrita no diretório de destino.",
+                file=sys.stderr,
+            )
+            return 2
+
+        print(f"CandidateProfile salvo com sucesso em '{output_path}'.")
+
+    return 0
+
+
+def _present_draft_review(draft: CandidateProfileDraft) -> None:
+    file_name = Path(draft.source_file).name
+    print(f"Revisão do CandidateProfileDraft para '{file_name}':")
+    print(f"  Resumo do texto: {draft.raw_text_summary}")
+    print("  Evidências sugeridas:")
+    if draft.suggested_evidences:
+        for item in draft.suggested_evidences:
+            ev = item.evidence
+            prov = f"{ev.provenance.origin} -> {ev.provenance.locator}"
+            print(
+                f"    - [{item.confidence.upper()}] [{item.suggested_field}] "
+                f"{ev.statement} (proveniência: {prov})"
+            )
+    else:
+        print("    - (nenhuma evidência sugerida)")
+    print("  Seções não reconhecidas:")
+    if draft.unrecognized_sections:
+        for sec in draft.unrecognized_sections:
+            print(f"    - {sec}")
+    else:
+        print("    - (nenhuma)")
 
 
 if __name__ == "__main__":

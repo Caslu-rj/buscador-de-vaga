@@ -43,6 +43,7 @@ Esta aplicação resolve o problema ao:
 
 ## Funcionalidades Principais
 
+- **Importação e Consolidação de Currículos (PDF/DOCX):** Leitura offline e parsing determinístico de documentos de currículo para extração de evidências, habilidades e categorias com suporte a revisão (`--review`) e geração segura de `CandidateProfile` JSON (`--output`).
 - **Normalização Semântica de Categorias:** Mapeamento de títulos e sinônimos em português e inglês para categorias profissionais (`software-development`, `it-support-infrastructure`, `systems`, `quality-assurance`, `data`).
 - **Deduplicação Conservadora:** Consolidação de publicações idênticas da mesma fonte por identificadores canônicos ou equivalência inequívoca de empresa, título e localização.
 - **MatchAssessment Determinístico:** Avaliação multidimensional baseada em evidências explícitas no perfil (`supports` / `contradicts`) e no anúncio.
@@ -151,15 +152,37 @@ Crie o seu perfil local em um diretório não versionado (por exemplo, `meu-perf
 
 O comando `buscar-vagas` fica disponível no terminal após a instalação.
 
-### 1. Teste offline com dados sintéticos (Tracer Bullet)
+### 1. Importação, Revisão e Consolidação de Currículo (`importar-curriculo`)
 
-Para testar o fluxo completo sem gastar quota da API do Jooble, utilize um arquivo de postings sintéticos (veja o exemplo em `examples/job-postings.example.json`):
+Você pode importar um currículo em formato PDF (`.pdf`) ou Word (`.docx`) para inspecionar as evidências extraídas ou gerar um arquivo `CandidateProfile` JSON 100% offline e privado.
 
+#### a) Inspecionar e revisar o rascunho sem salvar arquivos (`--review`):
 ```bash
-buscar-vagas --profile examples/candidate-profile.example.json --category software-development --location "Brasil" --postings-file examples/job-postings.example.json
+buscar-vagas importar-curriculo --file meu-curriculo.pdf --review
 ```
 
-### 2. Busca live no Jooble Brasil
+#### b) Consolidação e salvamento de um CandidateProfile JSON (`--output`):
+```bash
+buscar-vagas importar-curriculo --file meu-curriculo.pdf --output meu-perfil.json
+```
+
+#### c) Sobrescrever um perfil existente (`--force`):
+Se o arquivo de saída já existir, o comando recusará a operação por padrão. Use `--force` para autorizar a substituição:
+```bash
+buscar-vagas importar-curriculo --file meu-curriculo.pdf --output meu-perfil.json --force
+```
+
+---
+
+### 2. Teste offline com dados sintéticos (Tracer Bullet)
+
+Para testar o fluxo completo utilizando o perfil gerado sem gastar quota da API do Jooble:
+
+```bash
+buscar-vagas --profile meu-perfil.json --category software-development --location "Brasil" --postings-file examples/job-postings.example.json
+```
+
+### 3. Busca live no Jooble Brasil
 
 Para realizar uma consulta real ao Jooble Brasil (requer `JOOBLE_API_KEY` configurada):
 
