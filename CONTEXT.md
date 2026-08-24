@@ -12,6 +12,26 @@ _Avoid_: User, Applicant
 A representação estruturada das evidências profissionais, objetivos, preferências e restrições declaradas pelo Candidate. O currículo é uma das fontes do perfil, não o próprio perfil.
 _Avoid_: Resume, CV, UserProfile
 
+**CandidateProfileDraft**:
+A representação intermediária e revisável do CandidateProfile gerada automaticamente pelo parsing de um ResumeDocument, contendo evidências e proveniências sugeridas para confirmação ou ajuste humano.
+_Avoid_: ParsedProfile, DraftResume
+
+**ResumeDocument**:
+O arquivo físico (PDF ou DOCX) do currículo fornecido pelo Candidate para extração de dados e conversão em CandidateProfileDraft.
+_Avoid_: ResumeFile, CVDocument
+
+**ResumeSection**:
+Um segmento de texto identificado no ResumeDocument referente a uma categoria específica de informação (ex: Experiência, Educação, Habilidades, Idiomas).
+_Avoid_: Paragraph, TextBlock
+
+**ResumeReader**:
+O componente desacoplado responsável por ler um ResumeDocument e extrair seu texto bruto e estrutura básica.
+_Avoid_: PDFExtractor, FileParser
+
+**ResumeParser**:
+O componente responsável por analisar o texto do ResumeDocument, segmentá-lo e construir um CandidateProfileDraft determinístico com Evidence e Provenance.
+_Avoid_: ResumeAnalyzer, Extractor
+
 **Evidence**:
 Um fato verificável do CandidateProfile que sustenta ou contradiz uma conclusão, como formação, projeto, experiência, curso, certificação, idioma, disponibilidade ou tecnologia conhecida.
 _Avoid_: Keyword, Claim
