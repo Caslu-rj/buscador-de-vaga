@@ -109,23 +109,29 @@ flowchart LR
 
 ---
 
-## Configuração da JOOBLE_API_KEY
+## Configuração de Credenciais das Fontes Live
 
-Para realizar buscas reais no Jooble Brasil, é necessário obter uma chave de API gratuita no portal de parceiros do Jooble.
+Para realizar buscas reais no Jooble Brasil ou na Adzuna Brasil, é necessário obter as credenciais nos portais dos respectivos fornecedores.
 
-A chave deve ser configurada **exclusivamente via variável de ambiente**:
+As credenciais devem ser configuradas **exclusivamente via variáveis de ambiente**:
 
-### Linux / macOS:
-```bash
-export JOOBLE_API_KEY="sua_chave_aqui"
-```
+### Jooble (`JOOBLE_API_KEY`)
+- **Linux / macOS:** `export JOOBLE_API_KEY="sua_chave_aqui"`
+- **Windows (PowerShell):** `$env:JOOBLE_API_KEY="sua_chave_aqui"`
 
-### Windows (PowerShell):
-```powershell
-$env:JOOBLE_API_KEY="sua_chave_aqui"
-```
+### Adzuna (`ADZUNA_APP_ID` e `ADZUNA_APP_KEY`)
+- **Linux / macOS:**
+  ```bash
+  export ADZUNA_APP_ID="seu_app_id_aqui"
+  export ADZUNA_APP_KEY="sua_app_key_aqui"
+  ```
+- **Windows (PowerShell):**
+  ```powershell
+  $env:ADZUNA_APP_ID="seu_app_id_aqui"
+  $env:ADZUNA_APP_KEY="sua_app_key_aqui"
+  ```
 
-> **Aviso de Segurança:** Nunca versione a sua `JOOBLE_API_KEY` ou a insira em arquivos do repositório. O `.gitignore` já está pré-configurado para ignorar arquivos `.env`.
+> **Aviso de Segurança:** Nunca versione suas chaves de API ou as insira em arquivos do repositório. O `.gitignore` já está pré-configurado para ignorar arquivos `.env`.
 
 ---
 
@@ -188,6 +194,22 @@ Para realizar uma consulta real ao Jooble Brasil (requer `JOOBLE_API_KEY` config
 
 ```bash
 buscar-vagas --profile meu-perfil.json --category software-development --location "Rio de Janeiro, RJ" --jooble --limit 10
+```
+
+### 4. Busca live na Adzuna Brasil
+
+Para realizar uma consulta real à Adzuna Brasil (requer `ADZUNA_APP_ID` e `ADZUNA_APP_KEY` configurados):
+
+```bash
+buscar-vagas --profile meu-perfil.json --category software-development --location "Rio de Janeiro, RJ" --adzuna --limit 10
+```
+
+### 5. Busca live combinada multi-fonte (Jooble + Adzuna)
+
+Para consultar ambas as fontes em uma mesma execução (requer credenciais de ambas):
+
+```bash
+buscar-vagas --profile meu-perfil.json --category software-development --location "Rio de Janeiro, RJ" --jooble --adzuna --limit 10
 ```
 
 ---

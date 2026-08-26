@@ -36,8 +36,13 @@ from buscador_de_vaga.resume import (
     UnsupportedFileFormatError,
     read_resume,
 )
-from buscador_de_vaga.sources.jooble import JoobleJobSource
-from buscador_de_vaga.sources.synthetic import SyntheticJobSource, SyntheticSourceError
+from buscador_de_vaga.sources import (
+    AdzunaJobSource,
+    JoobleJobSource,
+    MultiSourceJobSource,
+    SyntheticJobSource,
+    SyntheticSourceError,
+)
 
 
 def main(
@@ -53,6 +58,30 @@ def main(
 
     parser = _build_parser()
     arguments = parser.parse_args(argv)
+
+    has_postings_file = arguments.postings_file is not None
+    has_jooble = bool(arguments.jooble)
+    has_adzuna = bool(arguments.adzuna)
+
+    if not has_postings_file and not has_jooble and not has_adzuna:
+        print("Erro: Nenhuma fonte de vagas foi selecionada.", file=sys.stderr)
+        print(
+            "Ação: informe --jooble, --adzuna ou --postings-file <caminho> para realizar a busca.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if has_postings_file and (has_jooble or has_adzuna):
+        print(
+            "Erro: --postings-file não pode ser combinado com fontes live (--jooble ou --adzuna).",
+            file=sys.stderr,
+        )
+        print(
+            "Ação: selecione apenas --postings-file para busca sintética "
+            "ou a combinação desejada de fontes live (--jooble, --adzuna).",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         profile = load_candidate_profile(Path(arguments.profile))
@@ -70,9 +99,10 @@ def main(
         limit=arguments.limit,
     )
 
-    if arguments.postings_file is not None:
+    if has_postings_file:
+        assert arguments.postings_file is not None
         try:
-            source = SyntheticJobSource.from_file(Path(arguments.postings_file))
+            source: JobSource = SyntheticJobSource.from_file(Path(arguments.postings_file))
         except SyntheticSourceError as error:
             print(f"Erro: {error}", file=sys.stderr)
             print(
@@ -82,24 +112,33 @@ def main(
             return 2
         return _discover_and_present(profile=profile, criteria=criteria, source=source)
 
+    env = os.environ if environ is None else environ
+
     try:
-        api_key = _required_jooble_api_key(os.environ if environ is None else environ)
+        if has_jooble:
+            _required_jooble_api_key(env)
+        if has_adzuna:
+            _required_adzuna_credentials(env)
     except JobSourceError as error:
         return _report_source_error(error)
 
     if http_client is not None:
-        return _discover_and_present(
-            profile=profile,
-            criteria=criteria,
-            source=JoobleJobSource(api_key=api_key, client=http_client),
+        live_source = _build_live_sources(
+            has_jooble=has_jooble,
+            has_adzuna=has_adzuna,
+            environ=env,
+            client=http_client,
         )
+        return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
 
     with httpx.Client(timeout=10.0, follow_redirects=False) as client:
-        return _discover_and_present(
-            profile=profile,
-            criteria=criteria,
-            source=JoobleJobSource(api_key=api_key, client=client),
+        live_source = _build_live_sources(
+            has_jooble=has_jooble,
+            has_adzuna=has_adzuna,
+            environ=env,
+            client=client,
         )
+        return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
 
 
 def _discover_and_present(
@@ -214,15 +253,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Número máximo de publicações retornadas na primeira página.",
     )
-    source_group = parser.add_mutually_exclusive_group(required=True)
-    source_group.add_argument(
+    parser.add_argument(
         "--postings-file",
         help="Arquivo JSON de JobPostings sintéticos para o tracer bullet.",
     )
-    source_group.add_argument(
+    parser.add_argument(
         "--jooble",
         action="store_true",
         help="Consulta live explícita ao Jooble usando JOOBLE_API_KEY.",
+    )
+    parser.add_argument(
+        "--adzuna",
+        action="store_true",
+        help="Consulta live explícita à Adzuna usando ADZUNA_APP_ID e ADZUNA_APP_KEY.",
     )
     return parser
 
@@ -238,6 +281,50 @@ def _required_jooble_api_key(environ: Mapping[str, str]) -> str:
             retryable=False,
         )
     return api_key.strip()
+
+
+def _required_adzuna_credentials(environ: Mapping[str, str]) -> tuple[str, str]:
+    app_id = environ.get("ADZUNA_APP_ID")
+    if app_id is None or not app_id.strip():
+        raise JobSourceError(
+            "ADZUNA_APP_ID não está configurada.",
+            source_name=AdzunaJobSource.name,
+            kind=JobSourceFailureKind.CONFIGURATION,
+            action="defina ADZUNA_APP_ID no ambiente antes da busca live.",
+            retryable=False,
+        )
+
+    app_key = environ.get("ADZUNA_APP_KEY")
+    if app_key is None or not app_key.strip():
+        raise JobSourceError(
+            "ADZUNA_APP_KEY não está configurada.",
+            source_name=AdzunaJobSource.name,
+            kind=JobSourceFailureKind.CONFIGURATION,
+            action="defina ADZUNA_APP_KEY no ambiente antes da busca live.",
+            retryable=False,
+        )
+
+    return app_id.strip(), app_key.strip()
+
+
+def _build_live_sources(
+    *,
+    has_jooble: bool,
+    has_adzuna: bool,
+    environ: Mapping[str, str],
+    client: httpx.Client,
+) -> JobSource:
+    sources: list[JobSource] = []
+    if has_jooble:
+        api_key = _required_jooble_api_key(environ)
+        sources.append(JoobleJobSource(api_key=api_key, client=client))
+    if has_adzuna:
+        app_id, app_key = _required_adzuna_credentials(environ)
+        sources.append(AdzunaJobSource(app_id=app_id, app_key=app_key, client=client))
+
+    if len(sources) == 1:
+        return sources[0]
+    return MultiSourceJobSource(sources)
 
 
 def _report_source_error(error: JobSourceError) -> int:
