@@ -328,6 +328,336 @@ def test_cli_exibe_detalhes_completos_do_match_assessment(
     assert "Possíveis impeditivos:" in output.out
 
 
+def test_cli_exibe_resultado_da_adzuna_com_mock_transport(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "api.adzuna.com" in str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": "adz-101",
+                        "title": "Desenvolvedor(a) Python Júnior - Adzuna",
+                        "company": {"display_name": "Empresa Adzuna"},
+                        "location": {"display_name": "Brasil"},
+                        "redirect_url": "https://adzuna.example.invalid/jobs/adz-101",
+                        "created": "2026-08-26T10:00:00Z",
+                    }
+                ],
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        exit_code = main(
+            [
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--category",
+                "software-development",
+                "--location",
+                "Brasil",
+                "--adzuna",
+            ],
+            http_client=client,
+            environ={"ADZUNA_APP_ID": "test-app-id", "ADZUNA_APP_KEY": "test-app-key"},
+        )
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "1 oportunidade encontrada." in output.out
+    assert "Desenvolvedor(a) Python Júnior - Adzuna" in output.out
+    assert "Empresa Adzuna" in output.out
+    assert "https://adzuna.example.invalid/jobs/adz-101" in output.out
+    assert output.err == ""
+
+
+def test_cli_exibe_resultado_de_jooble_e_adzuna_em_multi_source_consultando_na_ordem(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    requests_made: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "br.jooble.org" in url_str:
+            requests_made.append("jooble")
+            return httpx.Response(
+                200,
+                json={
+                    "totalCount": 1,
+                    "jobs": [
+                        {
+                            "id": 9000001,
+                            "title": "Dev Python Jooble",
+                            "company": "Empresa Jooble",
+                            "location": "Brasil",
+                            "link": "https://jooble.example.invalid/jobs/9000001",
+                        }
+                    ],
+                },
+            )
+        if "api.adzuna.com" in url_str:
+            requests_made.append("adzuna")
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": "adz-9000002",
+                            "title": "Dev Python Adzuna",
+                            "company": {"display_name": "Empresa Adzuna"},
+                            "location": {"display_name": "Brasil"},
+                            "redirect_url": "https://adzuna.example.invalid/jobs/adz-9000002",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        exit_code = main(
+            [
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--category",
+                "software-development",
+                "--location",
+                "Brasil",
+                "--jooble",
+                "--adzuna",
+            ],
+            http_client=client,
+            environ={
+                "JOOBLE_API_KEY": "jooble-key",
+                "ADZUNA_APP_ID": "adzuna-id",
+                "ADZUNA_APP_KEY": "adzuna-key",
+            },
+        )
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert requests_made == ["jooble", "adzuna"]
+    assert "2 oportunidades encontradas." in output.out
+    assert "Dev Python Jooble" in output.out
+    assert "Dev Python Adzuna" in output.out
+    assert output.err == ""
+
+
+def test_cli_explica_como_configurar_adzuna_app_id(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--adzuna",
+        ],
+        environ={"ADZUNA_APP_KEY": "some-key"},
+    )
+
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "Erro: ADZUNA_APP_ID não está configurada." in output.err
+    assert "Ação: defina ADZUNA_APP_ID no ambiente antes da busca live." in output.err
+
+
+def test_cli_explica_como_configurar_adzuna_app_key(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--adzuna",
+        ],
+        environ={"ADZUNA_APP_ID": "some-id"},
+    )
+
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "Erro: ADZUNA_APP_KEY não está configurada." in output.err
+    assert "Ação: defina ADZUNA_APP_KEY no ambiente antes da busca live." in output.err
+
+
+def test_cli_nao_faz_requisicao_de_rede_se_faltar_credencial_em_multi_source(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"jobs": [], "results": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        exit_code = main(
+            [
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--category",
+                "software-development",
+                "--location",
+                "Brasil",
+                "--jooble",
+                "--adzuna",
+            ],
+            http_client=client,
+            environ={"JOOBLE_API_KEY": "jooble-key", "ADZUNA_APP_ID": "adzuna-id"},
+        )
+
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert len(calls) == 0
+    assert "Erro: ADZUNA_APP_KEY não está configurada." in output.err
+
+
+def test_cli_nao_expoe_credenciais_da_adzuna_ou_jooble_em_erros(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_id = "SECRET_ADZUNA_ID_999"
+    secret_key = "SECRET_ADZUNA_KEY_999"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text=f"Unauthorized for {secret_id}")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        exit_code = main(
+            [
+                "--profile",
+                str(_write_profile(tmp_path)),
+                "--category",
+                "software-development",
+                "--location",
+                "Brasil",
+                "--adzuna",
+            ],
+            http_client=client,
+            environ={"ADZUNA_APP_ID": secret_id, "ADZUNA_APP_KEY": secret_key},
+        )
+
+    output = capsys.readouterr()
+    assert exit_code == 1
+    assert secret_id not in output.out and secret_id not in output.err
+    assert secret_key not in output.out and secret_key not in output.err
+
+
+def test_cli_rejeita_combinacao_de_postings_file_com_jooble(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    postings_path = _write_fixture(
+        tmp_path, keywords="desenvolvedor de software", location="Brasil"
+    )
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_path),
+            "--jooble",
+        ],
+        environ={"JOOBLE_API_KEY": "test-key"},
+    )
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "--postings-file não pode ser combinado com fontes live" in output.err
+
+
+def test_cli_rejeita_combinacao_de_postings_file_com_adzuna(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    postings_path = _write_fixture(
+        tmp_path, keywords="desenvolvedor de software", location="Brasil"
+    )
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_path),
+            "--adzuna",
+        ],
+        environ={"ADZUNA_APP_ID": "id", "ADZUNA_APP_KEY": "key"},
+    )
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "--postings-file não pode ser combinado com fontes live" in output.err
+
+
+def test_cli_rejeita_combinacao_de_postings_file_com_jooble_e_adzuna(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    postings_path = _write_fixture(
+        tmp_path, keywords="desenvolvedor de software", location="Brasil"
+    )
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_path),
+            "--jooble",
+            "--adzuna",
+        ],
+        environ={
+            "JOOBLE_API_KEY": "jkey",
+            "ADZUNA_APP_ID": "id",
+            "ADZUNA_APP_KEY": "key",
+        },
+    )
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "--postings-file não pode ser combinado com fontes live" in output.err
+
+
+def test_cli_rejeita_execucao_sem_nenhuma_fonte_selecionada(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+        ]
+    )
+    output = capsys.readouterr()
+    assert exit_code == 2
+    assert "Erro: Nenhuma fonte de vagas foi selecionada." in output.err
+    assert "Ação: informe --jooble, --adzuna ou --postings-file <caminho>" in output.err
+
+
 def _write_profile(
     tmp_path: Path,
     *,
