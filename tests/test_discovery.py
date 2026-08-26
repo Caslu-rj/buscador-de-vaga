@@ -21,6 +21,7 @@ from buscador_de_vaga.domain import (
     Seniority,
     WorkplaceMode,
 )
+from buscador_de_vaga.sources.multi import MultiSourceJobSource
 
 
 class StubJobSource:
@@ -2088,3 +2089,60 @@ def test_discover_rejeita_categoria_que_nao_pertence_ao_candidate_profile() -> N
         match="JobCategory data não pertence ao CandidateProfile",
     ):
         OpportunityDiscovery(source=StubJobSource(())).discover(profile, criteria)
+
+
+def test_discover_executa_fluxo_normal_com_multi_source_job_source() -> None:
+    p1 = JobPosting(
+        source_name="synthetic-a",
+        external_id="a-001",
+        title="Desenvolvedor Python Júnior",
+        company="Empresa Alpha",
+        location="Rio de Janeiro, RJ",
+        source_url="https://jobs-a.example.invalid/a-001",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+    p2 = JobPosting(
+        source_name="synthetic-b",
+        external_id="b-001",
+        title="Desenvolvedor Python Pleno",
+        company="Empresa Beta",
+        location="São Paulo, SP",
+        source_url="https://jobs-b.example.invalid/b-001",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+    )
+
+    class NamedStubJobSource:
+        def __init__(self, name: str, postings: tuple[JobPosting, ...]) -> None:
+            self._name = name
+            self._postings = postings
+
+        @property
+        def name(self) -> str:
+            return self._name
+
+        def search(self, query: object) -> tuple[JobPosting, ...]:
+            return self._postings
+
+    source_a = NamedStubJobSource("synthetic-a", (p1,))
+    source_b = NamedStubJobSource("synthetic-b", (p2,))
+    multi = MultiSourceJobSource((source_a, source_b))
+
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=multi).discover(profile, criteria)
+
+    assert result.postings == (p1, p2)
+    assert len(result.opportunities) == 2
+    assert len(result.match_assessments) == 2
+    assert len(result.shortlist.items) == 2
+    assert result.source_report.source_name == "multi-source"
+    assert result.source_report.postings_received == 2
+
