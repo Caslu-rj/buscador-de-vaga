@@ -211,11 +211,13 @@ Decisão inicial: adiar integração direta.
 ## Matriz de decisão
 
 | Fonte | Tipo identificado | Estágio e Júnior | Dados úteis para matching | API adequada ao projeto | Prioridade |
+| --- | --- | --- | --- | --- | --- |
 | Remotar | Página pública estruturada | Sim | Alta | Não identificada | Muito alta |
 | Nube | Página pública estruturada | Sim, forte foco em estágio | Média | Não identificada | Muito alta |
 | ProgramaThor | Página pública estruturada | Sim | Alta | Não identificada | Alta |
 | Gupy | API oficial empresarial | Sim | Alta | Não para candidato individual | Baixa |
 | Indeed | APIs oficiais para parceiros e empregadores | Sim | Alta | Não para o caso atual | Baixa |
+
 
 ## Ordem recomendada de implementação
 
