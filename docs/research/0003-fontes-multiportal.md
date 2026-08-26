@@ -24,51 +24,23 @@ CIEE está explicitamente fora do escopo deste marco.
 
 ### 1. Remotar
 
-Classificação proposta: página pública estruturada.
+Classificação revisada: não recomendada para automação.
 
-Prioridade proposta: muito alta.
+Prioridade proposta: nenhuma para integração automatizada.
 
-O Remotar possui páginas públicas de vagas com informações úteis para o domínio do projeto.
+O Remotar possui páginas públicas de vagas com informações úteis para candidatos e para análise manual.
 
-Foram observados campos como:
+Durante a revisão posterior dos termos aplicáveis à plataforma, foi identificada proibição ao uso de mecanismos automatizados, software, scripts e tecnologias do tipo robot ou crawler para coleta ou cópia de conteúdo.
 
-Título da vaga.
+Por esse motivo, a disponibilidade pública das páginas não deve ser interpretada como autorização para coleta automatizada.
 
-Empresa.
+O projeto não implementará RemotarJobSource baseado em scraping.
 
-Senioridade.
+O Remotar poderá continuar sendo considerado apenas como referência manual ou através de alguma integração oficial futura, caso a plataforma venha a disponibilizá-la.
 
-Tipo de contratação.
+Risco técnico: não aplicável, pois a integração automatizada não será implementada nas condições atuais.
 
-Modalidade de trabalho.
-
-Descrição.
-
-Responsabilidades.
-
-Requisitos.
-
-Tecnologias.
-
-Origem da oportunidade.
-
-URL da vaga.
-
-Algumas oportunidades também identificam explicitamente a plataforma original, por exemplo Gupy.
-
-Isso é particularmente interessante para o projeto porque permite preservar Provenance e pode auxiliar na deduplicação entre diferentes fontes.
-
-Também existem oportunidades classificadas como Júnior e oportunidades voltadas a estágio.
-
-Não foi identificada nesta pesquisa uma API pública oficial voltada para consumo deste projeto.
-
-Antes de implementar acesso automatizado às páginas públicas, os termos aplicáveis e regras de acesso do portal devem ser revisados.
-
-Risco técnico: médio.
-
-Uma integração baseada em estrutura HTML pode quebrar quando o site alterar sua apresentação.
-
-Decisão inicial: recomendado para investigação como primeiro novo JobSource.
+Decisão revisada: não implementar automação ou scraping do Remotar.
 
 ### 2. Nube
 
@@ -104,51 +76,121 @@ A candidatura ocorre dentro do ecossistema do Nube e deve inicialmente permanece
 
 Antes de implementar acesso automatizado às páginas públicas, os termos aplicáveis e regras de acesso do portal devem ser revisados.
 
-Risco técnico: médio.
 
-Decisão inicial: recomendado como uma das primeiras fontes adicionais, principalmente por sua relevância para estágio.
+Não foi identificada uma API pública oficial adequada ao uso deste projeto.
+
+A candidatura ocorre dentro do ecossistema do Nube e deve permanecer manual ou assistida.
+
+Apesar da relevância da plataforma para estágio, o projeto não deve implementar coleta automatizada até que exista uma forma oficial de integração, autorização adequada ou mecanismo explicitamente destinado ao acesso programático.
+
+Risco técnico e operacional: pendente.
+
+Decisão revisada: manter Nube como fonte desejável, porém bloqueada para implementação automatizada até existir uma forma oficial adequada.
 
 ### 3. ProgramaThor
 
-Classificação proposta: página pública estruturada.
+Classificação revisada: não recomendada para automação.
+
+Prioridade proposta: nenhuma para integração automatizada.
+
+O ProgramaThor possui listagens públicas muito relevantes para desenvolvimento, incluindo oportunidades classificadas como Estágio e Júnior.
+
+Entretanto, a revisão das regras da plataforma identificou proibição ao uso de robôs ou bots para coleta automatizada de dados.
+
+Por esse motivo, o projeto não implementará ProgramaThorJobSource através de scraping das páginas públicas.
+
+A disponibilidade pública das vagas poderá continuar sendo utilizada apenas para consulta manual ou por uma integração oficial futura, caso seja disponibilizada.
+
+Risco técnico: não aplicável para o Marco 3, pois a automação não será implementada nas condições atuais.
+
+Decisão revisada: não implementar scraping ou automação do ProgramaThor.
+
+
+### 4. Adzuna
+
+Classificação proposta: API oficial adequada ao projeto.
 
 Prioridade proposta: alta.
 
-O ProgramaThor possui listagem pública dedicada a vagas de desenvolvimento.
+A Adzuna disponibiliza uma API REST oficial para pesquisa de vagas.
 
-A interface pública permite filtrar oportunidades por características importantes para o projeto, incluindo:
+A documentação oficial inclui o Brasil entre os mercados suportados através do código `br`.
 
-Tipo de contrato Estágio.
+A API permite realizar buscas utilizando informações como:
 
-Senioridade Júnior.
+Palavras-chave.
 
-Pleno.
+Localização.
 
-Sênior.
+Quantidade de resultados.
 
-Cidade.
+Ordenação.
 
-Remoto.
+Filtros adicionais suportados pelo serviço.
 
-Tecnologias.
+Os resultados disponibilizam dados úteis para normalização em JobPosting, incluindo:
 
-Faixa salarial quando informada.
+Identificador da vaga.
 
-Tipo e tamanho da empresa quando informados.
+Título.
 
-Foram encontradas páginas públicas contendo oportunidades classificadas simultaneamente como Estágio e Júnior.
+Descrição.
 
-Apesar de algumas URLs possuírem o termo `jobs-api`, isso não deve ser interpretado como evidência de uma API pública oficial.
+Empresa.
 
-Até o momento, a pesquisa confirma uma página web estruturada, não um contrato público de API destinado ao consumo programático.
+Localização.
 
-Antes de implementar acesso automatizado, os termos aplicáveis e regras de acesso devem ser revisados.
+Data de criação ou atualização quando informada.
 
-Risco técnico: médio.
+URL de redirecionamento para a oportunidade original.
 
-Decisão inicial: recomendado após validar Remotar e Nube.
+A integração exige credenciais próprias da API, destinadas ao consumo programático.
 
-### 4. Gupy
+Isso torna a Adzuna significativamente mais adequada ao projeto do que fontes que exigiriam scraping de páginas HTML.
+
+Risco técnico: baixo a médio, principalmente relacionado a limites da API e mudanças de contrato.
+
+Decisão: recomendada como próxima fonte real após Jooble.
+
+### 5. Remotive
+
+Classificação proposta: API pública oficial.
+
+Prioridade proposta: média a alta.
+
+A Remotive oferece uma API pública voltada à descoberta de vagas remotas.
+
+Os resultados possuem informações estruturadas úteis para o projeto, incluindo:
+
+Identificador.
+
+Título.
+
+Empresa.
+
+Categoria.
+
+Descrição.
+
+Tipo de trabalho.
+
+Data de publicação.
+
+Localização associada à vaga quando informada.
+
+URL original da oportunidade.
+
+A API possui suporte a tipos de vaga que podem incluir estágio.
+
+A integração deve preservar a atribuição exigida pela plataforma e o link original da oportunidade.
+
+Por possuir foco em trabalho remoto, a Remotive não substitui uma fonte brasileira generalista, mas complementa Jooble e Adzuna.
+
+Risco técnico: baixo a médio.
+
+Decisão: recomendada após Adzuna para ampliar oportunidades remotas.
+
+### 6. Gupy
 
 Classificação proposta: API oficial existente, mas inadequada para o caso de uso pessoal atual.
 
@@ -178,7 +220,7 @@ Decisão inicial: não implementar GupyJobSource baseado na API empresarial nest
 
 A candidatura em vagas Gupy deve inicialmente permanecer manual ou assistida.
 
-### 5. Indeed
+### 7. Indeed
 
 Classificação proposta: plataforma com APIs oficiais destinadas principalmente a parceiros, ATSs e empregadores.
 
@@ -212,24 +254,28 @@ Decisão inicial: adiar integração direta.
 
 | Fonte | Tipo identificado | Estágio e Júnior | Dados úteis para matching | API adequada ao projeto | Prioridade |
 | --- | --- | --- | --- | --- | --- |
-| Remotar | Página pública estruturada | Sim | Alta | Não identificada | Muito alta |
-| Nube | Página pública estruturada | Sim, forte foco em estágio | Média | Não identificada | Muito alta |
-| ProgramaThor | Página pública estruturada | Sim | Alta | Não identificada | Alta |
+| Jooble | API oficial | Sim | Alta | Sim | Implementada |
+| Adzuna | API oficial | Sim | Alta | Sim | Alta |
+| Remotive | API pública oficial | Sim, principalmente remoto | Alta | Sim | Média a alta |
+| Nube | Plataforma pública | Forte foco em estágio | Média | Pendente | Pendente |
+| Remotar | Página pública | Sim | Alta | Automação não recomendada | Nenhuma |
+| ProgramaThor | Página pública | Sim | Alta | Automação não recomendada | Nenhuma |
 | Gupy | API oficial empresarial | Sim | Alta | Não para candidato individual | Baixa |
 | Indeed | APIs oficiais para parceiros e empregadores | Sim | Alta | Não para o caso atual | Baixa |
 
 
 ## Ordem recomendada de implementação
 
-A ordem inicial recomendada é:
+A ordem revisada é:
 
-1. Criar suporte a múltiplos JobSources em uma única descoberta.
-2. Investigar Remotar como primeiro adapter adicional.
-3. Investigar Nube como segunda fonte, priorizando estágio.
-4. Investigar ProgramaThor como terceira fonte.
-5. Implementar deduplicação entre diferentes fontes.
-6. Utilizar Gupy apenas quando houver um método apropriado de descoberta ou redirecionamento.
-7. Adiar Indeed enquanto não existir uma forma adequada de integração para o caso de uso do projeto.
+1. Jooble, já implementada.
+2. MultiSourceJobSource, já implementado.
+3. Adzuna como próxima fonte real.
+4. Remotive para ampliar vagas remotas.
+5. Nube somente quando existir forma oficial adequada de integração.
+6. Manter Gupy e Indeed adiados até existir um modelo de acesso adequado para candidatos individuais.
+7. Não implementar scraping de Remotar ou ProgramaThor.
+8. Implementar e aprimorar deduplicação entre fontes oficiais conforme novas integrações forem adicionadas.
 
 ## Arquitetura desejada
 
@@ -244,9 +290,8 @@ OpportunityDiscovery continuará responsável por normalização, deduplicação
 A arquitetura desejada conceitualmente é:
 
 JoobleJobSource
-RemotarJobSource
-NubeJobSource
-ProgramaThorJobSource
+AdzunaJobSource
+RemotiveJobSource
 
 Todos alimentam:
 
@@ -302,10 +347,14 @@ Quando não existir integração oficial adequada, a candidatura deverá permane
 
 ## Conclusão
 
-A pesquisa indica que a expansão multiportal é tecnicamente viável sem alterar o núcleo determinístico já existente.
+A revisão posterior dos termos das plataformas mostrou que viabilidade técnica não é suficiente para justificar uma integração automatizada.
 
-Remotar, Nube e ProgramaThor são os candidatos mais interessantes para o próximo estágio de investigação.
+Remotar e ProgramaThor possuem conteúdo tecnicamente acessível, porém suas regras atuais tornam inadequada a implementação de coleta automatizada pelo projeto.
 
-Gupy e Indeed possuem APIs oficiais, porém seus modelos de acesso atuais não correspondem ao uso de um candidato individual automatizando suas próprias candidaturas.
+Nube continua sendo uma fonte altamente relevante para estágio, mas permanece pendente até existir uma forma oficial adequada de integração.
 
-O próximo passo recomendado é implementar primeiro a capacidade de agregação de múltiplos JobSources e, em seguida, validar tecnicamente o primeiro adapter público antes de adicionar as demais fontes.
+Adzuna e Remotive passam a ser as alternativas prioritárias porque oferecem interfaces oficialmente destinadas ao acesso programático.
+
+Com MultiSourceJobSource já implementado, o próximo passo recomendado é criar AdzunaJobSource e integrá-lo ao fluxo existente junto ao Jooble.
+
+Após validar a Adzuna com vagas reais brasileiras, a Remotive poderá ser adicionada para ampliar a cobertura de oportunidades remotas.
