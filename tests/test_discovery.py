@@ -168,6 +168,361 @@ def test_entry_level_preference_keeps_missing_seniority_auditable_as_unknown() -
     )
 
 
+def test_summary_with_explicit_junior_role_creates_auditable_requirement() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python",
+                summary="Vaga para desenvolvedor júnior.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    assessment = result.match_assessments[0]
+    junior_requirement = next(
+        item.requirement
+        for item in assessment.requirement_assessments
+        if item.requirement.subject == RequirementSubject.seniority(Seniority.JUNIOR)
+    )
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        junior_requirement.provenance,
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        (Provenance(origin="synthetic", locator="job-001#summary"),),
+        CareerPriority.JUNIOR,
+        CareerRecommendation.RECOMMENDED,
+    )
+
+
+def test_summary_with_explicit_senior_role_is_not_recommended() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python",
+                summary="Buscamos profissional sênior.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        CareerPriority.SENIOR,
+        CareerRecommendation.NOT_RECOMMENDED,
+    )
+
+
+def test_summary_with_explicit_mid_level_role_has_low_priority() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python",
+                summary="Nível pleno.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        CareerPriority.MID_LEVEL,
+        CareerRecommendation.LOW_PRIORITY,
+    )
+
+
+def test_summary_with_explicit_internship_program_is_recommended() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python",
+                summary="Programa de estágio em desenvolvimento.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        CareerPriority.INTERNSHIP,
+        CareerRecommendation.RECOMMENDED,
+    )
+
+
+def test_summary_with_explicit_trainee_program_is_recommended() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python",
+                summary="Programa de trainee em tecnologia.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        CareerPriority.TRAINEE,
+        CareerRecommendation.RECOMMENDED,
+    )
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected_priority"),
+    (
+        ("VAGA PARA DESENVOLVEDOR JUNIOR.", CareerPriority.JUNIOR),
+        ("PROGRAMA DE ESTAGIO EM DESENVOLVIMENTO.", CareerPriority.INTERNSHIP),
+        ("NIVEL PLENO.", CareerPriority.MID_LEVEL),
+    ),
+)
+def test_summary_career_signals_ignore_case_and_diacritics(
+    summary: str,
+    expected_priority: CareerPriority,
+) -> None:
+    result = _discover(
+        (_synthetic_posting(title="Desenvolvedor Python", summary=summary),),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert career_assessment.priority is expected_priority
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        "Nossa equipe possui desenvolvedores seniores.",
+        "Você trabalhará com um engenheiro sênior.",
+        "Mentoria realizada por profissionais seniores.",
+        "Terá contato com especialistas seniores.",
+        "Você trabalhará com desenvolvedores seniores da equipe.",
+        "Você trabalhará com um desenvolvedor sênior.",
+        "Nossa equipe conta com um profissional sênior.",
+        "Você atuará ao lado de um desenvolvedor pleno.",
+        "Mentoria realizada por um desenvolvedor júnior.",
+        "Você dará suporte a um estagiário da equipe.",
+        "Produto escrito em Python e SQL.",
+    ),
+)
+def test_summary_without_explicit_role_context_keeps_career_unknown(summary: str) -> None:
+    result = _discover(
+        (_synthetic_posting(title="Desenvolvedor Python", summary=summary),),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    assessment = result.match_assessments[0]
+    entry_assessments = tuple(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind
+        in {RequirementKind.ENTRY_PROGRAM, RequirementKind.SENIORITY}
+    )
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        entry_assessments,
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        (),
+        CareerPriority.UNKNOWN,
+        CareerRecommendation.REVIEW,
+    )
+
+
+def test_same_career_subject_preserves_title_and_summary_provenance() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python Júnior",
+                summary="Vaga para desenvolvedor júnior.",
+            ),
+        )
+    )
+
+    junior_requirement = next(
+        item.requirement
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject == RequirementSubject.seniority(Seniority.JUNIOR)
+    )
+    assert junior_requirement.provenance == (
+        Provenance(origin="synthetic", locator="job-001#summary"),
+        Provenance(origin="synthetic", locator="job-001#title"),
+    )
+
+
+def test_senior_in_summary_prevails_over_junior_in_title() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python Júnior",
+                summary="Posição sênior.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    assessment = result.match_assessments[0]
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+        assessment.eligibility_status,
+    ) == (
+        CareerPriority.SENIOR,
+        CareerRecommendation.NOT_RECOMMENDED,
+        EligibilityStatus.UNCERTAIN,
+    )
+
+
+def test_mid_level_in_summary_prevails_over_junior_in_title_without_senior() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Python Júnior",
+                summary="Nível pleno.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    assessment = result.match_assessments[0]
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+        assessment.eligibility_status,
+    ) == (
+        CareerPriority.MID_LEVEL,
+        CareerRecommendation.LOW_PRIORITY,
+        EligibilityStatus.UNCERTAIN,
+    )
+
+
+def test_real_summary_junior_signal_stays_separate_from_fit_score_and_evidence() -> None:
+    python_evidence = _candidate_evidence(
+        evidence_id="candidate-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Candidate possui evidência de Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        locator="skills/python",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(python_evidence,),
+    )
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Fullstack Python",
+                summary=(
+                    "Vaga para desenvolvedor júnior com conhecimentos em Python."
+                ),
+                location="Rio de Janeiro, RJ",
+            ),
+        ),
+        profile=profile,
+        location="Rio de Janeiro",
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    assessment = result.match_assessments[0]
+    junior_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject == RequirementSubject.seniority(Seniority.JUNIOR)
+    )
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        assessment.fit_score.value,
+        assessment.fit_score.policy_version,
+        tuple((item.dimension.value, item.weight) for item in assessment.fit_score.breakdown),
+        junior_assessment.status,
+        junior_assessment.evidence,
+        career_assessment.priority,
+        career_assessment.recommendation,
+        assessment.eligibility_status,
+        profile.evidence,
+    ) == (
+        80,
+        "match-v2",
+        (
+            ("job-category", 40),
+            ("skills", 25),
+            ("entry-program-seniority", 20),
+            ("location-workplace-mode", 15),
+        ),
+        RequirementStatus.UNKNOWN,
+        (),
+        CareerPriority.JUNIOR,
+        CareerRecommendation.RECOMMENDED,
+        EligibilityStatus.UNCERTAIN,
+        (python_evidence,),
+    )
+
+
+def test_summary_career_signal_changes_only_entry_level_ranking() -> None:
+    postings = (
+        _synthetic_posting(
+            external_id="a-unknown",
+            title="Desenvolvedor Python",
+            company="Empresa Unknown",
+            location="Niterói, RJ",
+        ),
+        _synthetic_posting(
+            external_id="z-junior-summary",
+            title="Desenvolvedor Python",
+            company="Empresa Junior",
+            summary="Vaga júnior.",
+            location="Niterói, RJ",
+        ),
+    )
+
+    active_result = _discover(
+        postings,
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+    repeated_active_result = _discover(
+        tuple(reversed(postings)),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+    default_result = _discover(postings)
+
+    assert tuple(item.id for item in active_result.shortlist.items) == (
+        "synthetic:z-junior-summary",
+        "synthetic:a-unknown",
+    )
+    assert repeated_active_result.shortlist == active_result.shortlist
+    assert tuple(item.id for item in default_result.shortlist.items) == (
+        "synthetic:a-unknown",
+        "synthetic:z-junior-summary",
+    )
+
+
 def test_entry_level_preference_marks_mid_level_as_low_priority() -> None:
     result = _discover(
         (_synthetic_posting(title="Desenvolvedor de Software Pleno"),),

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal, Protocol
+from unicodedata import combining
 from unicodedata import normalize as normalize_unicode
 from urllib.parse import urlsplit, urlunsplit
 
@@ -218,6 +219,70 @@ _SENIORITY_ALIASES: dict[Seniority, tuple[str, ...]] = {
     Seniority.MID_LEVEL: ("mid-level", "pleno"),
     Seniority.SENIOR: ("senior", "sênior"),
 }
+
+_SUMMARY_ENTRY_PROGRAM_CONTEXTS: dict[EntryProgram, tuple[str, ...]] = {
+    EntryProgram.INTERNSHIP: (
+        "vaga de estagio",
+        "vaga para estagio",
+        "oportunidade de estagio",
+        "programa de estagio",
+        "posicao de estagio",
+    ),
+    EntryProgram.TRAINEE: (
+        "programa trainee",
+        "programa de trainee",
+        "vaga trainee",
+        "vaga de trainee",
+        "posicao trainee",
+        "posicao de trainee",
+    ),
+}
+_SUMMARY_SENIORITY_CONTEXTS: dict[Seniority, tuple[str, ...]] = {
+    Seniority.JUNIOR: (
+        "vaga junior",
+        "posicao junior",
+        "nivel junior",
+    ),
+    Seniority.MID_LEVEL: (
+        "vaga pleno",
+        "posicao pleno",
+        "nivel pleno",
+    ),
+    Seniority.SENIOR: (
+        "vaga senior",
+        "posicao senior",
+        "nivel senior",
+    ),
+}
+_SUMMARY_ENTRY_PROGRAM_ROLE_CONTEXTS: dict[EntryProgram, tuple[str, ...]] = {
+    EntryProgram.INTERNSHIP: ("estagiario", "estagiaria"),
+}
+_SUMMARY_SENIORITY_ROLE_CONTEXTS: dict[Seniority, tuple[str, ...]] = {
+    Seniority.JUNIOR: (
+        "profissional junior",
+        "desenvolvedor junior",
+        "desenvolvedora junior",
+    ),
+    Seniority.MID_LEVEL: (
+        "profissional pleno",
+        "desenvolvedor pleno",
+        "desenvolvedora plena",
+    ),
+    Seniority.SENIOR: (
+        "profissional senior",
+        "desenvolvedor senior",
+        "desenvolvedora senior",
+    ),
+}
+_SUMMARY_ROLE_INTENT_TERMS = (
+    "buscamos",
+    "nivel",
+    "oportunidade",
+    "posicao",
+    "programa",
+    "procuramos",
+    "vaga",
+)
 
 _WORKPLACE_MODE_ALIASES: dict[WorkplaceMode, tuple[str, ...]] = {
     WorkplaceMode.HYBRID: (
@@ -767,6 +832,16 @@ def _entry_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                     locator=f"{posting.external_id}#title",
                 ),
             )
+        if posting.summary is None:
+            continue
+        for subject in _entry_subjects_in_summary(posting.summary):
+            signals.record(
+                subject,
+                Provenance(
+                    origin=posting.source_name,
+                    locator=f"{posting.external_id}#summary",
+                ),
+            )
 
     return signals.to_requirements(FitDimension.ENTRY_PROGRAM_SENIORITY)
 
@@ -784,6 +859,58 @@ def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
         if any(_contains_term(normalized, alias) for alias in aliases)
     )
     return subjects
+
+
+def _entry_subjects_in_summary(summary: str) -> set[RequirementSubject]:
+    subjects: set[RequirementSubject] = set()
+    for clause in re.split(r"[.!?;\r\n]+", summary):
+        subjects.update(_entry_subjects_in_summary_clause(clause))
+    return subjects
+
+
+def _entry_subjects_in_summary_clause(clause: str) -> set[RequirementSubject]:
+    normalized = _comparison_text_without_diacritics(clause)
+    subjects = {
+        RequirementSubject.entry_program(value)
+        for value, contexts in _SUMMARY_ENTRY_PROGRAM_CONTEXTS.items()
+        if any(_contains_term(normalized, context) for context in contexts)
+    }
+    subjects.update(
+        RequirementSubject.entry_program(value)
+        for value, contexts in _SUMMARY_ENTRY_PROGRAM_ROLE_CONTEXTS.items()
+        if any(_role_context_is_explicit(normalized, context) for context in contexts)
+    )
+    subjects.update(
+        RequirementSubject.seniority(value)
+        for value, contexts in _SUMMARY_SENIORITY_CONTEXTS.items()
+        if any(_contains_term(normalized, context) for context in contexts)
+    )
+    subjects.update(
+        RequirementSubject.seniority(value)
+        for value, contexts in _SUMMARY_SENIORITY_ROLE_CONTEXTS.items()
+        if any(_role_context_is_explicit(normalized, context) for context in contexts)
+    )
+    return subjects
+
+
+def _role_context_is_explicit(clause: str, role_context: str) -> bool:
+    escaped = re.escape(role_context).replace(r"\ ", r"\s+")
+    for match in re.finditer(rf"(?<!\w){escaped}(?!\w)", clause):
+        preceding_words = re.findall(r"\w+", clause[: match.start()])
+        if not preceding_words or any(
+            term in preceding_words[-4:] for term in _SUMMARY_ROLE_INTENT_TERMS
+        ):
+            return True
+    return False
+
+
+def _comparison_text_without_diacritics(value: str) -> str:
+    normalized = _comparison_text(value) or ""
+    return "".join(
+        character
+        for character in normalize_unicode("NFD", normalized)
+        if not combining(character)
+    )
 
 
 def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
