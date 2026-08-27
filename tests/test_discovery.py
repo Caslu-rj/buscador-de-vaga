@@ -81,6 +81,102 @@ def _discover(
     )
 
 
+@pytest.mark.parametrize(
+    ("title", "expected_seniority"),
+    (
+        ("Desenvolvedor Full Stack Sr", Seniority.SENIOR),
+        ("Desenvolvedor Full Stack SR", Seniority.SENIOR),
+        ("Desenvolvedor Full Stack Senior", Seniority.SENIOR),
+        ("Desenvolvedor Full Stack Sênior", Seniority.SENIOR),
+        ("Desenvolvedor Python Jr", Seniority.JUNIOR),
+    ),
+)
+def test_title_seniority_alias_creates_a_requirement(
+    title: str,
+    expected_seniority: Seniority,
+) -> None:
+    result = _discover(
+        (_synthetic_posting(title=title),),
+    )
+
+    seniority_subjects = tuple(
+        item.requirement.subject
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SENIORITY
+    )
+    assert seniority_subjects == (
+        RequirementSubject.seniority(expected_seniority),
+    )
+
+
+def test_real_sr_title_is_not_recommended_without_changing_fit_or_profile() -> None:
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    original_evidence = profile.evidence
+    posting = _synthetic_posting(title="Desenvolvedor full Stack Sr")
+
+    default_assessment = _discover(
+        (posting,),
+        profile=profile,
+    ).match_assessments[0]
+    preferred_assessment = _discover(
+        (posting,),
+        profile=profile,
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    ).match_assessments[0]
+
+    career_assessment = preferred_assessment.career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+        preferred_assessment.fit_score,
+        preferred_assessment.eligibility_status,
+        profile.evidence,
+    ) == (
+        CareerPriority.SENIOR,
+        CareerRecommendation.NOT_RECOMMENDED,
+        default_assessment.fit_score,
+        default_assessment.eligibility_status,
+        original_evidence,
+    )
+
+
+def test_explicit_summary_role_recognizes_sr_as_senior() -> None:
+    result = _discover(
+        (
+            _synthetic_posting(
+                title="Desenvolvedor Full Stack",
+                summary="Buscamos Desenvolvedor Full Stack Sr.",
+            ),
+        ),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        CareerPriority.SENIOR,
+        CareerRecommendation.NOT_RECOMMENDED,
+    )
+
+
+def test_sr_alias_does_not_match_inside_another_word() -> None:
+    result = _discover(
+        (_synthetic_posting(title="Desenvolvedor SRE"),),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert career_assessment.priority is CareerPriority.UNKNOWN
+
+
 def test_entry_level_preference_recommends_an_explicit_internship() -> None:
     result = _discover(
         (_synthetic_posting(title="Estágio Desenvolvedor Python"),),

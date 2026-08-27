@@ -219,7 +219,7 @@ _ENTRY_PROGRAM_ALIASES: dict[EntryProgram, tuple[str, ...]] = {
 _SENIORITY_ALIASES: dict[Seniority, tuple[str, ...]] = {
     Seniority.JUNIOR: ("jr", "junior", "júnior"),
     Seniority.MID_LEVEL: ("mid-level", "pleno"),
-    Seniority.SENIOR: ("senior", "sênior"),
+    Seniority.SENIOR: ("sr", "senior", "sênior"),
 }
 
 _SUMMARY_ENTRY_PROGRAM_CONTEXTS: dict[EntryProgram, tuple[str, ...]] = {
