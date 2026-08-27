@@ -209,7 +209,7 @@ buscar-vagas --profile meu-perfil.json --category software-development --locatio
 Para consultar ambas as fontes em uma mesma execução (requer credenciais de ambas):
 
 ```bash
-buscar-vagas --profile meu-perfil.json --category software-development --location "Rio de Janeiro, RJ" --jooble --adzuna --limit 10
+buscar-vagas --profile meu-perfil.json --category software-development --location "Rio de Janeiro, RJ" --career-preference entry-level --jooble --adzuna --limit 10
 ```
 
 ---
@@ -217,6 +217,8 @@ buscar-vagas --profile meu-perfil.json --category software-development --locatio
 ## Interpretação de Score e Elegibilidade
 
 A aplicação separa o valor numérico de compatibilidade da decisão de elegibilidade.
+
+O `FitScore` mede compatibilidade sustentada por Evidence, enquanto a preferência de carreira orienta a recomendação e o ranking como uma métrica separada.
 
 ### FitScore (0 a 100)
 Calculado a partir de 4 dimensões de avaliação:

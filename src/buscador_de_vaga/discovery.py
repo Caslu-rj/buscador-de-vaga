@@ -10,6 +10,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    CareerPreference,
+    CareerPreferenceAssessment,
+    CareerPriority,
+    CareerRecommendation,
     EligibilityStatus,
     EntryProgram,
     Evidence,
@@ -236,6 +240,7 @@ _WORKPLACE_CONTEXT_TERMS = (
 )
 
 _MATCH_POLICY_VERSION = "match-v2"
+_CAREER_ENTRY_POLICY_VERSION = "career-entry-v1"
 _DIMENSION_WEIGHTS: tuple[tuple[FitDimension, int], ...] = (
     (FitDimension.JOB_CATEGORY, 40),
     (FitDimension.SKILLS, 25),
@@ -245,6 +250,20 @@ _DIMENSION_WEIGHTS: tuple[tuple[FitDimension, int], ...] = (
 _ELIGIBILITY_ORDER = {
     EligibilityStatus.ELIGIBLE: 0,
     EligibilityStatus.UNCERTAIN: 1,
+}
+_CAREER_RECOMMENDATION_ORDER = {
+    CareerRecommendation.RECOMMENDED: 0,
+    CareerRecommendation.REVIEW: 1,
+    CareerRecommendation.LOW_PRIORITY: 2,
+    CareerRecommendation.NOT_RECOMMENDED: 3,
+}
+_CAREER_PRIORITY_ORDER = {
+    CareerPriority.INTERNSHIP: 0,
+    CareerPriority.JUNIOR: 1,
+    CareerPriority.TRAINEE: 2,
+    CareerPriority.UNKNOWN: 3,
+    CareerPriority.MID_LEVEL: 4,
+    CareerPriority.SENIOR: 5,
 }
 
 type _ExternalIdentity = tuple[Literal["external-id"], str, str]
@@ -332,6 +351,7 @@ class OpportunityDiscovery:
         shortlist_items = _ranked_shortlist_items(
             opportunities,
             assessments_by_opportunity_id,
+            career_preference=criteria.career_preference,
         )[: criteria.limit]
 
         return DiscoveryResult(
@@ -352,6 +372,8 @@ class OpportunityDiscovery:
 def _ranked_shortlist_items(
     opportunities: tuple[Opportunity, ...],
     assessments_by_opportunity_id: dict[str, MatchAssessment],
+    *,
+    career_preference: CareerPreference | None,
 ) -> tuple[Opportunity, ...]:
     visible_opportunities = (
         opportunity
@@ -359,10 +381,20 @@ def _ranked_shortlist_items(
         if assessments_by_opportunity_id[opportunity.id].eligibility_status
         is not EligibilityStatus.INELIGIBLE
     )
+    if career_preference is None:
+        return tuple(
+            sorted(
+                visible_opportunities,
+                key=lambda opportunity: _shortlist_sort_key(
+                    opportunity,
+                    assessments_by_opportunity_id[opportunity.id],
+                ),
+            )
+        )
     return tuple(
         sorted(
             visible_opportunities,
-            key=lambda opportunity: _shortlist_sort_key(
+            key=lambda opportunity: _career_shortlist_sort_key(
                 opportunity,
                 assessments_by_opportunity_id[opportunity.id],
             ),
@@ -452,6 +484,108 @@ def _assess_opportunity(
             policy_version=_MATCH_POLICY_VERSION,
             breakdown=breakdown,
         ),
+        career_preference_assessment=(
+            _assess_career_preference(criteria.career_preference, requirements)
+            if criteria.career_preference is not None
+            else None
+        ),
+    )
+
+
+def _career_shortlist_sort_key(
+    opportunity: Opportunity,
+    assessment: MatchAssessment,
+) -> tuple[int, int, int, int, int, float, str]:
+    career_assessment = assessment.career_preference_assessment
+    assert career_assessment is not None
+    latest_update = _latest_source_update_timestamp(opportunity)
+    return (
+        _ELIGIBILITY_ORDER[assessment.eligibility_status],
+        _CAREER_RECOMMENDATION_ORDER[career_assessment.recommendation],
+        -assessment.fit_score.value,
+        _CAREER_PRIORITY_ORDER[career_assessment.priority],
+        0 if latest_update is not None else 1,
+        -latest_update if latest_update is not None else 0.0,
+        opportunity.id,
+    )
+
+
+def _assess_career_preference(
+    preference: CareerPreference,
+    requirements: tuple[Requirement, ...],
+) -> CareerPreferenceAssessment:
+    has_senior = any(
+        requirement.subject == RequirementSubject.seniority(Seniority.SENIOR)
+        for requirement in requirements
+    )
+    if has_senior:
+        return CareerPreferenceAssessment(
+            preference=preference,
+            priority=CareerPriority.SENIOR,
+            recommendation=CareerRecommendation.NOT_RECOMMENDED,
+            policy_version=_CAREER_ENTRY_POLICY_VERSION,
+            reason=(
+                "A Opportunity possui sinal explícito de nível sênior, "
+                "incompatível com início de carreira."
+            ),
+        )
+    has_mid_level = any(
+        requirement.subject == RequirementSubject.seniority(Seniority.MID_LEVEL)
+        for requirement in requirements
+    )
+    if has_mid_level:
+        return CareerPreferenceAssessment(
+            preference=preference,
+            priority=CareerPriority.MID_LEVEL,
+            recommendation=CareerRecommendation.LOW_PRIORITY,
+            policy_version=_CAREER_ENTRY_POLICY_VERSION,
+            reason=(
+                "A Opportunity possui sinal explícito de nível pleno, "
+                "fora da prioridade de início de carreira."
+            ),
+        )
+    has_internship = any(
+        requirement.subject == RequirementSubject.entry_program(EntryProgram.INTERNSHIP)
+        for requirement in requirements
+    )
+    if has_internship:
+        return CareerPreferenceAssessment(
+            preference=preference,
+            priority=CareerPriority.INTERNSHIP,
+            recommendation=CareerRecommendation.RECOMMENDED,
+            policy_version=_CAREER_ENTRY_POLICY_VERSION,
+            reason="A Opportunity possui sinal explícito de programa de estágio.",
+        )
+    has_junior = any(
+        requirement.subject == RequirementSubject.seniority(Seniority.JUNIOR)
+        for requirement in requirements
+    )
+    if has_junior:
+        return CareerPreferenceAssessment(
+            preference=preference,
+            priority=CareerPriority.JUNIOR,
+            recommendation=CareerRecommendation.RECOMMENDED,
+            policy_version=_CAREER_ENTRY_POLICY_VERSION,
+            reason="A Opportunity possui sinal explícito de nível júnior.",
+        )
+    has_trainee = any(
+        requirement.subject == RequirementSubject.entry_program(EntryProgram.TRAINEE)
+        for requirement in requirements
+    )
+    if has_trainee:
+        return CareerPreferenceAssessment(
+            preference=preference,
+            priority=CareerPriority.TRAINEE,
+            recommendation=CareerRecommendation.RECOMMENDED,
+            policy_version=_CAREER_ENTRY_POLICY_VERSION,
+            reason="A Opportunity possui sinal explícito de programa trainee.",
+        )
+    return CareerPreferenceAssessment(
+        preference=preference,
+        priority=CareerPriority.UNKNOWN,
+        recommendation=CareerRecommendation.REVIEW,
+        policy_version=_CAREER_ENTRY_POLICY_VERSION,
+        reason="A Opportunity não possui nível de carreira explícito.",
     )
 
 

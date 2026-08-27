@@ -16,6 +16,32 @@ class JobCategory(StrEnum):
     DATA = "data"
 
 
+class CareerPreference(StrEnum):
+    """Preferências de carreira que podem orientar a ordenação."""
+
+    ENTRY_LEVEL = "entry-level"
+
+
+class CareerPriority(StrEnum):
+    """Classificação observável de nível para uma preferência de carreira."""
+
+    INTERNSHIP = "internship"
+    JUNIOR = "junior"
+    TRAINEE = "trainee"
+    UNKNOWN = "unknown"
+    MID_LEVEL = "mid-level"
+    SENIOR = "senior"
+
+
+class CareerRecommendation(StrEnum):
+    """Recomendação separada de elegibilidade e compatibilidade técnica."""
+
+    RECOMMENDED = "recommended"
+    REVIEW = "review"
+    LOW_PRIORITY = "low-priority"
+    NOT_RECOMMENDED = "not-recommended"
+
+
 class EntryProgram(StrEnum):
     """Programas de entrada reconhecidos pela política inicial."""
 
@@ -200,6 +226,7 @@ class SearchCriteria:
     category: JobCategory
     location: str
     limit: int = 10
+    career_preference: CareerPreference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +329,17 @@ class FitScore:
 
 
 @dataclass(frozen=True, slots=True)
+class CareerPreferenceAssessment:
+    """Aplicação auditável de uma política de preferência de carreira."""
+
+    preference: CareerPreference
+    priority: CareerPriority
+    recommendation: CareerRecommendation
+    policy_version: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class SkillGap:
     """Skill comprovadamente não atendida por Evidence contrária."""
 
@@ -316,6 +354,7 @@ class MatchAssessment:
     opportunity_id: str
     requirement_assessments: tuple[RequirementAssessment, ...]
     fit_score: FitScore
+    career_preference_assessment: CareerPreferenceAssessment | None = None
 
     @property
     def strengths(self) -> tuple[RequirementAssessment, ...]:
