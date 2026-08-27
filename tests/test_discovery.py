@@ -9,6 +9,7 @@ from buscador_de_vaga.discovery import (
 )
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    EligibilityStatus,
     EntryProgram,
     Evidence,
     EvidenceAssertion,
@@ -17,6 +18,7 @@ from buscador_de_vaga.domain import (
     JobSourceQuery,
     Provenance,
     RequirementKind,
+    RequirementStatus,
     RequirementSubject,
     SearchCriteria,
     Seniority,
@@ -1205,7 +1207,7 @@ def test_discover_avalia_localizacao_e_workplace_mode_sustentados() -> None:
         )
         for item in location_assessments
     ) == (
-        ("location", "são paulo, sp", "met", 8),
+        ("location", "sao paulo, sp", "met", 8),
         ("workplace-mode", "hybrid", "met", 7),
     )
     assert tuple(item.evidence for item in location_assessments) == (
@@ -1216,6 +1218,315 @@ def test_discover_avalia_localizacao_e_workplace_mode_sustentados() -> None:
         "job-category",
         "location",
         "workplace-mode",
+    )
+
+
+def test_discover_marks_equivalent_search_criteria_location_as_met() -> None:
+    posting = _synthetic_posting(location="Rio de Janeiro, RJ")
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    location_assessment = next(
+        item
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    assert location_assessment.status.value == "met"
+
+
+def test_discover_normalizes_full_state_name_only_for_location_matching() -> None:
+    original_location = "Rio de Janeiro, Estado do Rio de Janeiro"
+    posting = _synthetic_posting(location=original_location)
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    location_assessment = next(
+        item
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    assert (
+        location_assessment.requirement.subject.value,
+        location_assessment.status.value,
+        result.postings[0].location,
+        result.opportunities[0].location,
+    ) == (
+        "rio de janeiro, rj",
+        "met",
+        original_location,
+        original_location,
+    )
+
+
+def test_discover_merges_equivalent_location_variants_into_one_requirement() -> None:
+    city_only = JobPosting(
+        source_name="alpha",
+        external_id="a-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location="Rio de Janeiro",
+        source_url="https://jobs.example.invalid/shared",
+        collected_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+    with_state = JobPosting(
+        source_name="beta",
+        external_id="b-001",
+        title="Software Engineer",
+        company="ACME Tecnologia",
+        location="Rio de Janeiro, RJ",
+        source_url="https://jobs.example.invalid/shared",
+        collected_at=datetime(2026, 8, 21, 13, tzinfo=UTC),
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((city_only, with_state))).discover(
+        profile,
+        criteria,
+    )
+
+    location_assessments = tuple(
+        item
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    assert tuple(
+        (
+            item.requirement.subject.value,
+            item.requirement.is_resolved,
+            item.status.value,
+            len(item.requirement.provenance),
+        )
+        for item in location_assessments
+    ) == (("rio de janeiro, rj", True, "met", 2),)
+
+
+def test_search_criteria_location_evidence_is_explicit_and_temporary() -> None:
+    posting = _synthetic_posting(location="Rio de Janeiro, RJ")
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    location_assessment = next(
+        item
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    derived_evidence = location_assessment.evidence[0]
+    assert (
+        derived_evidence.assertion,
+        derived_evidence.subject,
+        derived_evidence.provenance.origin,
+        derived_evidence.provenance.locator,
+        "execução da busca" in derived_evidence.statement,
+        "não declara residência" in derived_evidence.statement,
+        profile.evidence,
+    ) == (
+        EvidenceAssertion.SUPPORTS,
+        location_assessment.requirement.subject,
+        "search-criteria",
+        "location",
+        True,
+        True,
+        (),
+    )
+
+
+def test_equivalent_location_receives_the_full_location_dimension_weight() -> None:
+    posting = _synthetic_posting(location="Rio de Janeiro, Estado do Rio de Janeiro")
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    location_breakdown = next(
+        item
+        for item in result.match_assessments[0].fit_score.breakdown
+        if item.dimension.value == "location-workplace-mode"
+    )
+    assert (
+        location_breakdown.weight,
+        location_breakdown.awarded_points,
+        location_breakdown.covered_weight,
+    ) == (15, 15, 15)
+
+
+def test_different_city_stays_unknown_without_search_criteria_evidence() -> None:
+    posting = _synthetic_posting(location="Niterói, RJ")
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    location_assessment = next(
+        item
+        for item in result.match_assessments[0].requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    assert (
+        location_assessment.status,
+        location_assessment.evidence,
+        result.match_assessments[0].eligibility_status,
+    ) == (
+        RequirementStatus.UNKNOWN,
+        (),
+        EligibilityStatus.UNCERTAIN,
+    )
+
+
+def test_search_criteria_location_evidence_does_not_leak_between_discoveries() -> None:
+    posting = _synthetic_posting(location="Rio de Janeiro, RJ")
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    discovery = OpportunityDiscovery(source=StubJobSource((posting,)))
+
+    matching_result = discovery.discover(
+        profile,
+        SearchCriteria(
+            category=JobCategory.SOFTWARE_DEVELOPMENT,
+            location="Rio de Janeiro",
+            limit=10,
+        ),
+    )
+    different_result = discovery.discover(
+        profile,
+        SearchCriteria(
+            category=JobCategory.SOFTWARE_DEVELOPMENT,
+            location="Niterói",
+            limit=10,
+        ),
+    )
+
+    statuses = tuple(
+        next(
+            item.status
+            for item in result.match_assessments[0].requirement_assessments
+            if item.requirement.subject.kind is RequirementKind.LOCATION
+        )
+        for result in (matching_result, different_result)
+    )
+    assert statuses == (RequirementStatus.MET, RequirementStatus.UNKNOWN)
+
+
+def test_real_full_stack_case_matches_location_without_inferring_junior_evidence() -> None:
+    python_evidence = _candidate_evidence(
+        evidence_id="candidate-python",
+        subject=RequirementSubject.skill("python"),
+        statement="Candidate possui evidência de Python.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        locator="skills/python",
+    )
+    sql_evidence = _candidate_evidence(
+        evidence_id="candidate-sql",
+        subject=RequirementSubject.skill("sql"),
+        statement="Candidate possui evidência de SQL.",
+        assertion=EvidenceAssertion.SUPPORTS,
+        locator="skills/sql",
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+        evidence=(python_evidence, sql_evidence),
+    )
+    posting = _synthetic_posting(
+        title="DESENVOLVEDOR FULL STACK - JÚNIOR (SQL | Python)",
+        location="Rio de Janeiro, Estado do Rio de Janeiro",
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=StubJobSource((posting,))).discover(profile, criteria)
+
+    assessment = result.match_assessments[0]
+    location_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.LOCATION
+    )
+    junior_assessment = next(
+        item
+        for item in assessment.requirement_assessments
+        if item.requirement.subject.kind is RequirementKind.SENIORITY
+        and item.requirement.subject.value is Seniority.JUNIOR
+    )
+    assert (
+        location_assessment.status,
+        junior_assessment.status,
+        junior_assessment.evidence,
+        assessment.fit_score.value,
+        assessment.fit_score.evidence_coverage,
+        assessment.eligibility_status,
+        tuple(item.id for item in result.shortlist.items),
+        tuple(
+            (item.dimension.value, item.weight)
+            for item in assessment.fit_score.breakdown
+        ),
+    ) == (
+        RequirementStatus.MET,
+        RequirementStatus.UNKNOWN,
+        (),
+        80,
+        80,
+        EligibilityStatus.UNCERTAIN,
+        ("synthetic:job-001",),
+        (
+            ("job-category", 40),
+            ("skills", 25),
+            ("entry-program-seniority", 20),
+            ("location-workplace-mode", 15),
+        ),
     )
 
 
@@ -1332,7 +1643,7 @@ def test_discover_mantem_localizacoes_conflitantes_como_unknown() -> None:
         for item in location_assessments
     ) == (
         ("rio de janeiro, rj", False, "unknown", 8, 0, 0),
-        ("são paulo, sp", False, "unknown", 7, 0, 0),
+        ("sao paulo, sp", False, "unknown", 7, 0, 0),
     )
     assert location_assessments[0].evidence == ()
     assert location_assessments[1].evidence == (sao_paulo_evidence,)
