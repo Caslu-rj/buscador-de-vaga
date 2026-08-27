@@ -439,7 +439,7 @@ def test_cli_exibe_resultado_de_jooble_e_adzuna_em_multi_source_consultando_na_o
 
     output = capsys.readouterr()
     assert exit_code == 0
-    assert requests_made == ["jooble", "adzuna"]
+    assert requests_made == ["jooble", "adzuna"] * 3
     assert "2 oportunidades encontradas." in output.out
     assert "Dev Python Jooble" in output.out
     assert "Dev Python Adzuna" in output.out

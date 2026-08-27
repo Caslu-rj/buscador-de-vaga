@@ -57,3 +57,34 @@ def test_synthetic_source_decodifica_a_fixture_e_preserva_timestamps(
             source_updated_at=datetime.fromisoformat("2026-08-20T18:30:00-03:00"),
         ),
     )
+
+
+def test_synthetic_source_returns_empty_for_other_keywords_in_the_same_search(
+    tmp_path: Path,
+) -> None:
+    fixture_path = tmp_path / "job-postings.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_name": "synthetic",
+                "query": {
+                    "keywords": "desenvolvedor de software",
+                    "location": "Brasil",
+                },
+                "postings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = SyntheticJobSource.from_file(fixture_path)
+
+    postings = source.search(
+        JobSourceQuery(
+            keywords="estágio desenvolvimento",
+            location="Brasil",
+            limit=10,
+        )
+    )
+
+    assert postings == ()
