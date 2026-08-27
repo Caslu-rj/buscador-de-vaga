@@ -43,7 +43,78 @@ def test_cli_exibe_o_resultado_principal_de_uma_descoberta_sintetica(
     assert "ACME Tecnologia" in completed.stdout
     assert "Rio de Janeiro, RJ" in completed.stdout
     assert "https://jobs.example.invalid/job-001" in completed.stdout
+    assert "Nível de carreira:" not in completed.stdout
+    assert "Recomendação de carreira:" not in completed.stdout
     assert completed.stderr == ""
+
+
+def test_cli_exibe_preferencia_de_carreira_quando_ativada(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    postings_path = _write_fixture(
+        tmp_path,
+        keywords="desenvolvedor de software",
+        location="Brasil",
+        postings=[
+            {
+                "external_id": "junior-001",
+                "title": "Desenvolvedor Python Júnior",
+                "company": "ACME Tecnologia",
+                "location": "Brasil",
+                "source_url": "https://jobs.example.invalid/junior-001",
+                "collected_at": "2026-08-21T12:00:00Z",
+            }
+        ],
+    )
+
+    exit_code = main(
+        [
+            "--profile",
+            str(_write_profile(tmp_path)),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--career-preference",
+            "entry-level",
+            "--postings-file",
+            str(postings_path),
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "Elegibilidade:" in output.out
+    assert "FitScore:" in output.out
+    assert "Nível de carreira: Júnior" in output.out
+    assert "Recomendação de carreira: Recomendada" in output.out
+    assert output.err == ""
+
+
+def test_cli_rejeita_preferencia_de_carreira_desconhecida(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "--profile",
+                "candidate-profile.json",
+                "--category",
+                "software-development",
+                "--location",
+                "Brasil",
+                "--career-preference",
+                "executive",
+                "--postings-file",
+                "job-postings.json",
+            ]
+        )
+
+    output = capsys.readouterr()
+    assert captured.value.code == 2
+    assert "invalid choice: 'executive'" in output.err
+    assert "entry-level" in output.err
 
 
 def test_cli_exibe_uma_unica_opportunity_para_postings_consolidados(
@@ -225,6 +296,8 @@ def test_cli_exibe_resultado_do_jooble_com_mock_transport(
                 "software-development",
                 "--location",
                 "Brasil",
+                "--career-preference",
+                "entry-level",
                 "--jooble",
             ],
             http_client=client,
@@ -238,6 +311,8 @@ def test_cli_exibe_resultado_do_jooble_com_mock_transport(
     assert "Empresa Exemplo" in output.out
     assert "Brasil - remoto" in output.out
     assert "https://example.invalid/jobs/9000003" in output.out
+    assert "Nível de carreira: Júnior" in output.out
+    assert "Recomendação de carreira: Recomendada" in output.out
     assert output.err == ""
 
 

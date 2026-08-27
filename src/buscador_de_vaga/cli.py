@@ -18,6 +18,9 @@ from buscador_de_vaga.discovery import (
 )
 from buscador_de_vaga.domain import (
     CandidateProfile,
+    CareerPreference,
+    CareerPriority,
+    CareerRecommendation,
     EligibilityStatus,
     JobCategory,
     SearchCriteria,
@@ -97,6 +100,11 @@ def main(
         category=JobCategory(arguments.category),
         location=arguments.location,
         limit=arguments.limit,
+        career_preference=(
+            CareerPreference(arguments.career_preference)
+            if arguments.career_preference is not None
+            else None
+        ),
     )
 
     if has_postings_file:
@@ -190,6 +198,16 @@ def _discover_and_present(
             f"   FitScore: {assessment.fit_score.value}/100 "
             f"(cobertura de evidência: {assessment.fit_score.evidence_coverage}%)"
         )
+        if assessment.career_preference_assessment is not None:
+            career_assessment = assessment.career_preference_assessment
+            print(
+                "   Nível de carreira: "
+                f"{_career_priority_label(career_assessment.priority)}"
+            )
+            print(
+                "   Recomendação de carreira: "
+                f"{_career_recommendation_label(career_assessment.recommendation)}"
+            )
         print("   Breakdown:")
         for item in assessment.fit_score.breakdown:
             print(
@@ -234,6 +252,28 @@ def _eligibility_label(status: EligibilityStatus) -> str:
     return status.value
 
 
+def _career_priority_label(priority: CareerPriority) -> str:
+    labels = {
+        CareerPriority.INTERNSHIP: "Estágio",
+        CareerPriority.JUNIOR: "Júnior",
+        CareerPriority.TRAINEE: "Trainee",
+        CareerPriority.UNKNOWN: "Não informado",
+        CareerPriority.MID_LEVEL: "Pleno",
+        CareerPriority.SENIOR: "Sênior",
+    }
+    return labels[priority]
+
+
+def _career_recommendation_label(recommendation: CareerRecommendation) -> str:
+    labels = {
+        CareerRecommendation.RECOMMENDED: "Recomendada",
+        CareerRecommendation.REVIEW: "Revisar",
+        CareerRecommendation.LOW_PRIORITY: "Baixa prioridade",
+        CareerRecommendation.NOT_RECOMMENDED: "Não recomendada",
+    }
+    return labels[recommendation]
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="buscar-vagas",
@@ -247,6 +287,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="JobCategory usada nesta execução.",
     )
     parser.add_argument("--location", required=True, help="Localização da busca.")
+    parser.add_argument(
+        "--career-preference",
+        choices=tuple(preference.value for preference in CareerPreference),
+        help="Preferência opcional que orienta a ordenação de nível de carreira.",
+    )
     parser.add_argument(
         "--limit",
         type=_positive_integer,
