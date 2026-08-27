@@ -198,6 +198,146 @@ def test_summary_with_explicit_junior_role_creates_auditable_requirement() -> No
     )
 
 
+def test_jooble_html_summary_detects_senior_without_changing_original() -> None:
+    original_summary = (
+        "&nbsp;Estamos contratando <b>Desenvolvedor </b>Backend Sênior!&nbsp;"
+    )
+    posting = _synthetic_posting(
+        title="Desenvolvedor Backend",
+        summary=original_summary,
+    )
+
+    result = _discover(
+        (posting,),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+        result.postings[0].summary,
+        posting.summary,
+    ) == (
+        CareerPriority.SENIOR,
+        CareerRecommendation.NOT_RECOMMENDED,
+        original_summary,
+        original_summary,
+    )
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected_priority", "expected_recommendation"),
+    (
+        (
+            "Desenvolvedor Backend Sênior.",
+            CareerPriority.SENIOR,
+            CareerRecommendation.NOT_RECOMMENDED,
+        ),
+        (
+            "Desenvolvedor Python Júnior.",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Desenvolvedor Full Stack Pleno.",
+            CareerPriority.MID_LEVEL,
+            CareerRecommendation.LOW_PRIORITY,
+        ),
+        (
+            "Buscamos <strong>Desenvolvedor Python Júnior</strong>.",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Vaga para Desenvolvedor Full Stack Pleno.",
+            CareerPriority.MID_LEVEL,
+            CareerRecommendation.LOW_PRIORITY,
+        ),
+        (
+            "Procuramos pessoa desenvolvedora Full Stack Pleno.",
+            CareerPriority.MID_LEVEL,
+            CareerRecommendation.LOW_PRIORITY,
+        ),
+        (
+            "Estamos contratando Pessoa Desenvolvedora Backend Júnior.",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Estamos contratando Desenvolvedor Backend S&ecirc;nior.",
+            CareerPriority.SENIOR,
+            CareerRecommendation.NOT_RECOMMENDED,
+        ),
+        (
+            "Estamos contratando Desenvolvedor de Software Sênior.",
+            CareerPriority.SENIOR,
+            CareerRecommendation.NOT_RECOMMENDED,
+        ),
+        (
+            "Buscamos Desenvolvedor de Sistemas Júnior.",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Vaga para Desenvolvedor de Dados Pleno.",
+            CareerPriority.MID_LEVEL,
+            CareerRecommendation.LOW_PRIORITY,
+        ),
+        (
+            "Procuramos Desenvolvedora de Software Júnior.",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Desenvolvedora Frontend Sênior.",
+            CareerPriority.SENIOR,
+            CareerRecommendation.NOT_RECOMMENDED,
+        ),
+        (
+            "Programa de <b>Estágio</b> em Desenvolvimento.",
+            CareerPriority.INTERNSHIP,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Programa de <strong>Trainee</strong> em tecnologia.",
+            CareerPriority.TRAINEE,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "Vaga de <span>Estágio</span> em TI.",
+            CareerPriority.INTERNSHIP,
+            CareerRecommendation.RECOMMENDED,
+        ),
+        (
+            "&nbsp;BUSCAMOS DESENVOLVEDOR PYTHON JUNIOR.&nbsp;",
+            CareerPriority.JUNIOR,
+            CareerRecommendation.RECOMMENDED,
+        ),
+    ),
+)
+def test_summary_normalization_preserves_explicit_career_signals(
+    summary: str,
+    expected_priority: CareerPriority,
+    expected_recommendation: CareerRecommendation,
+) -> None:
+    result = _discover(
+        (_synthetic_posting(title="Desenvolvedor Backend", summary=summary),),
+        career_preference=CareerPreference.ENTRY_LEVEL,
+    )
+
+    career_assessment = result.match_assessments[0].career_preference_assessment
+    assert career_assessment is not None
+    assert (
+        career_assessment.priority,
+        career_assessment.recommendation,
+    ) == (
+        expected_priority,
+        expected_recommendation,
+    )
+
+
 def test_summary_with_explicit_senior_role_is_not_recommended() -> None:
     result = _discover(
         (
@@ -312,15 +452,22 @@ def test_summary_career_signals_ignore_case_and_diacritics(
     "summary",
     (
         "Nossa equipe possui desenvolvedores seniores.",
+        "Nossa equipe possui desenvolvedores Python seniores.",
         "Você trabalhará com um engenheiro sênior.",
+        "Você trabalhará com um desenvolvedor backend sênior.",
         "Mentoria realizada por profissionais seniores.",
+        "Mentoria realizada por profissional pleno.",
         "Terá contato com especialistas seniores.",
+        "Terá suporte de um desenvolvedor junior.",
         "Você trabalhará com desenvolvedores seniores da equipe.",
         "Você trabalhará com um desenvolvedor sênior.",
         "Nossa equipe conta com um profissional sênior.",
+        "Você atuará ao lado de uma desenvolvedora senior.",
         "Você atuará ao lado de um desenvolvedor pleno.",
         "Mentoria realizada por um desenvolvedor júnior.",
         "Você dará suporte a um estagiário da equipe.",
+        "Buscamos desenvolvedor para trabalhar com profissional sênior.",
+        "Vaga para desenvolvedor backend python full stack cloud sênior.",
         "Produto escrito em Python e SQL.",
     ),
 )

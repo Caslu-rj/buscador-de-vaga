@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from html import unescape
+from html.parser import HTMLParser
 from typing import Literal, Protocol
 from unicodedata import combining
 from unicodedata import normalize as normalize_unicode
@@ -257,25 +259,17 @@ _SUMMARY_SENIORITY_CONTEXTS: dict[Seniority, tuple[str, ...]] = {
 _SUMMARY_ENTRY_PROGRAM_ROLE_CONTEXTS: dict[EntryProgram, tuple[str, ...]] = {
     EntryProgram.INTERNSHIP: ("estagiario", "estagiaria"),
 }
-_SUMMARY_SENIORITY_ROLE_CONTEXTS: dict[Seniority, tuple[str, ...]] = {
-    Seniority.JUNIOR: (
-        "profissional junior",
-        "desenvolvedor junior",
-        "desenvolvedora junior",
-    ),
-    Seniority.MID_LEVEL: (
-        "profissional pleno",
-        "desenvolvedor pleno",
-        "desenvolvedora plena",
-    ),
-    Seniority.SENIOR: (
-        "profissional senior",
-        "desenvolvedor senior",
-        "desenvolvedora senior",
-    ),
-}
+_SUMMARY_SENIORITY_ROLES = (
+    "pessoa desenvolvedora",
+    "desenvolvedor",
+    "desenvolvedora",
+    "profissional",
+)
 _SUMMARY_ROLE_INTENT_TERMS = (
     "buscamos",
+    "contratamos",
+    "contratando",
+    "contratar",
     "nivel",
     "oportunidade",
     "posicao",
@@ -283,6 +277,40 @@ _SUMMARY_ROLE_INTENT_TERMS = (
     "procuramos",
     "vaga",
 )
+_SUMMARY_ROLE_INTENT_LINK_TERMS = frozenset(
+    {
+        "a",
+        "ao",
+        "da",
+        "de",
+        "do",
+        "o",
+        "para",
+        "por",
+        "um",
+        "uma",
+    }
+)
+_SUMMARY_ROLE_QUALIFIER_BLOCKERS = frozenset(
+    {
+        "a",
+        "ao",
+        "com",
+        "da",
+        "do",
+        "e",
+        "em",
+        "na",
+        "no",
+        "para",
+        "por",
+        "que",
+        "um",
+        "uma",
+    }
+)
+_SUMMARY_ROLE_QUALIFIER_CONNECTORS = frozenset({"de"})
+_SUMMARY_ROLE_MAX_QUALIFIER_TOKENS = 4
 
 _WORKPLACE_MODE_ALIASES: dict[WorkplaceMode, tuple[str, ...]] = {
     WorkplaceMode.HYBRID: (
@@ -335,6 +363,32 @@ type _ExternalIdentity = tuple[Literal["external-id"], str, str]
 type _CanonicalUrlIdentity = tuple[Literal["canonical-url"], str]
 type _StrongIdentity = _ExternalIdentity | _CanonicalUrlIdentity
 type _CompleteFieldsIdentity = tuple[str, str, str]
+
+
+class _SummaryTextExtractor(HTMLParser):
+    """Extrai apenas o texto inerte de um summary possivelmente em HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ignored_element_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        del attrs
+        if tag.casefold() in {"script", "style"}:
+            self._ignored_element_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() in {"script", "style"} and self._ignored_element_depth:
+            self._ignored_element_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._ignored_element_depth:
+            self.parts.append(data)
 
 
 class _RequirementSignals:
@@ -863,7 +917,8 @@ def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
 
 def _entry_subjects_in_summary(summary: str) -> set[RequirementSubject]:
     subjects: set[RequirementSubject] = set()
-    for clause in re.split(r"[.!?;\r\n]+", summary):
+    normalized_summary = _summary_comparison_text(summary)
+    for clause in re.split(r"[.!?;\r\n]+", normalized_summary):
         subjects.update(_entry_subjects_in_summary_clause(clause))
     return subjects
 
@@ -887,8 +942,12 @@ def _entry_subjects_in_summary_clause(clause: str) -> set[RequirementSubject]:
     )
     subjects.update(
         RequirementSubject.seniority(value)
-        for value, contexts in _SUMMARY_SENIORITY_ROLE_CONTEXTS.items()
-        if any(_role_context_is_explicit(normalized, context) for context in contexts)
+        for value, aliases in _SENIORITY_ALIASES.items()
+        if any(
+            _seniority_role_context_is_explicit(normalized, role, alias)
+            for role in _SUMMARY_SENIORITY_ROLES
+            for alias in aliases
+        )
     )
     return subjects
 
@@ -896,12 +955,61 @@ def _entry_subjects_in_summary_clause(clause: str) -> set[RequirementSubject]:
 def _role_context_is_explicit(clause: str, role_context: str) -> bool:
     escaped = re.escape(role_context).replace(r"\ ", r"\s+")
     for match in re.finditer(rf"(?<!\w){escaped}(?!\w)", clause):
-        preceding_words = re.findall(r"\w+", clause[: match.start()])
-        if not preceding_words or any(
-            term in preceding_words[-4:] for term in _SUMMARY_ROLE_INTENT_TERMS
-        ):
+        if _role_occurrence_is_explicit(clause, match.start()):
             return True
     return False
+
+
+def _seniority_role_context_is_explicit(
+    clause: str,
+    role: str,
+    seniority: str,
+) -> bool:
+    escaped_role = re.escape(role).replace(r"\ ", r"\s+")
+    escaped_seniority = re.escape(seniority).replace(r"\ ", r"\s+")
+    qualifier = rf"(?P<qualifiers>(?:\s+[\w+#.-]+){{0,{_SUMMARY_ROLE_MAX_QUALIFIER_TOKENS}}})"
+    pattern = rf"(?<!\w){escaped_role}{qualifier}\s+{escaped_seniority}(?!\w)"
+    for match in re.finditer(pattern, clause):
+        qualifier_tokens = tuple(re.findall(r"[\w+#.-]+", match["qualifiers"]))
+        if not _summary_role_qualifiers_are_conservative(qualifier_tokens):
+            continue
+        if _role_occurrence_is_explicit(clause, match.start()):
+            return True
+    return False
+
+
+def _summary_role_qualifiers_are_conservative(qualifier_tokens: tuple[str, ...]) -> bool:
+    for index, token in enumerate(qualifier_tokens):
+        if token in _SUMMARY_ROLE_QUALIFIER_BLOCKERS:
+            return False
+        if token in _SUMMARY_ROLE_QUALIFIER_CONNECTORS and (
+            index == len(qualifier_tokens) - 1
+            or qualifier_tokens[index + 1] in _SUMMARY_ROLE_QUALIFIER_BLOCKERS
+            or qualifier_tokens[index + 1] in _SUMMARY_ROLE_QUALIFIER_CONNECTORS
+        ):
+            return False
+    return True
+
+
+def _role_occurrence_is_explicit(clause: str, start: int) -> bool:
+    preceding_words = re.findall(r"\w+", clause[:start])
+    if not preceding_words:
+        return True
+    for index in range(len(preceding_words) - 1, max(-1, len(preceding_words) - 5), -1):
+        if preceding_words[index] not in _SUMMARY_ROLE_INTENT_TERMS:
+            continue
+        return all(
+            word in _SUMMARY_ROLE_INTENT_LINK_TERMS
+            for word in preceding_words[index + 1 :]
+        )
+    return False
+
+
+def _summary_comparison_text(value: str) -> str:
+    parser = _SummaryTextExtractor()
+    parser.feed(unescape(value))
+    parser.close()
+    return _comparison_text_without_diacritics("".join(parser.parts))
 
 
 def _comparison_text_without_diacritics(value: str) -> str:
