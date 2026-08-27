@@ -57,13 +57,13 @@ class SyntheticJobSource:
         )
 
     def search(self, query: JobSourceQuery) -> tuple[JobPosting, ...]:
-        """Reproduz a resposta somente para a consulta declarada na fixture."""
-        if _normalize_text(query.keywords) != _normalize_text(
-            self._expected_keywords
-        ) or _normalize_text(query.location) != _normalize_text(self._expected_location):
+        """Reproduz a resposta declarada e trata outros termos como vazios."""
+        if _normalize_text(query.location) != _normalize_text(self._expected_location):
             raise SyntheticSourceError("a fixture sintética foi preparada para outra consulta")
         if query.limit < 1:
             raise SyntheticSourceError("o limite da consulta deve ser maior que zero")
+        if _normalize_text(query.keywords) != _normalize_text(self._expected_keywords):
+            return ()
         return self._postings[: query.limit]
 
 

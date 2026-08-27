@@ -34,6 +34,7 @@ from buscador_de_vaga.domain import (
     Shortlist,
     WorkplaceMode,
 )
+from buscador_de_vaga.search_strategy import CareerSearchStrategy
 
 
 class InvalidDiscoveryRequest(ValueError):
@@ -104,14 +105,6 @@ class DiscoveryResult:
     match_assessments: tuple[MatchAssessment, ...]
     shortlist: Shortlist
 
-
-_CATEGORY_SEARCH_TERMS: dict[JobCategory, str] = {
-    JobCategory.SOFTWARE_DEVELOPMENT: "desenvolvedor de software",
-    JobCategory.IT_SUPPORT_INFRASTRUCTURE: "suporte de TI infraestrutura",
-    JobCategory.SYSTEMS: "analista de sistemas",
-    JobCategory.QUALITY_ASSURANCE: "qualidade de software QA",
-    JobCategory.DATA: "analista de dados",
-}
 
 _CATEGORY_TITLE_ALIASES: dict[JobCategory, tuple[str, ...]] = {
     JobCategory.SOFTWARE_DEVELOPMENT: (
@@ -302,6 +295,7 @@ class OpportunityDiscovery:
 
     def __init__(self, *, source: JobSource) -> None:
         self._source = source
+        self._search_strategy = CareerSearchStrategy()
 
     def discover(
         self,
@@ -314,12 +308,15 @@ class OpportunityDiscovery:
                 f"JobCategory {criteria.category} não pertence ao CandidateProfile"
             )
 
-        query = JobSourceQuery(
-            keywords=_CATEGORY_SEARCH_TERMS[criteria.category],
+        queries = self._search_strategy.queries_for(
+            category=criteria.category,
             location=criteria.location,
             limit=criteria.limit,
         )
-        postings = self._source.search(query)
+        collected_postings: list[JobPosting] = []
+        for query in queries:
+            collected_postings.extend(self._source.search(query))
+        postings = tuple(collected_postings)
         opportunities = _consolidate_postings(postings)
         match_assessments = tuple(
             _assess_opportunity(opportunity, profile) for opportunity in opportunities

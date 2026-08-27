@@ -14,6 +14,7 @@ from buscador_de_vaga.domain import (
     EvidenceAssertion,
     JobCategory,
     JobPosting,
+    JobSourceQuery,
     Provenance,
     RequirementKind,
     RequirementSubject,
@@ -30,8 +31,25 @@ class StubJobSource:
     def __init__(self, postings: tuple[JobPosting, ...]) -> None:
         self._postings = postings
 
-    def search(self, query: object) -> tuple[JobPosting, ...]:
-        return self._postings
+    def search(self, query: JobSourceQuery) -> tuple[JobPosting, ...]:
+        if query.keywords == "desenvolvedor de software":
+            return self._postings
+        return ()
+
+
+class RecordingJobSource:
+    name = "recording"
+
+    def __init__(
+        self,
+        responses_by_keywords: dict[str, tuple[JobPosting, ...]] | None = None,
+    ) -> None:
+        self._responses_by_keywords = responses_by_keywords or {}
+        self.received_queries: list[JobSourceQuery] = []
+
+    def search(self, query: JobSourceQuery) -> tuple[JobPosting, ...]:
+        self.received_queries.append(query)
+        return self._responses_by_keywords.get(query.keywords, ())
 
 
 def _discover(
@@ -2112,19 +2130,28 @@ def test_discover_executa_fluxo_normal_com_multi_source_job_source() -> None:
     )
 
     class NamedStubJobSource:
-        def __init__(self, name: str, postings: tuple[JobPosting, ...]) -> None:
+        def __init__(
+            self,
+            name: str,
+            responses_by_keywords: dict[str, tuple[JobPosting, ...]],
+        ) -> None:
             self._name = name
-            self._postings = postings
+            self._responses_by_keywords = responses_by_keywords
+            self.received_queries: list[JobSourceQuery] = []
 
         @property
         def name(self) -> str:
             return self._name
 
-        def search(self, query: object) -> tuple[JobPosting, ...]:
-            return self._postings
+        def search(self, query: JobSourceQuery) -> tuple[JobPosting, ...]:
+            self.received_queries.append(query)
+            return self._responses_by_keywords.get(query.keywords, ())
 
-    source_a = NamedStubJobSource("synthetic-a", (p1,))
-    source_b = NamedStubJobSource("synthetic-b", (p2,))
+    source_a = NamedStubJobSource("synthetic-a", {"estágio desenvolvimento": (p1,)})
+    source_b = NamedStubJobSource(
+        "synthetic-b",
+        {"desenvolvedor python júnior": (p2,)},
+    )
     multi = MultiSourceJobSource((source_a, source_b))
 
     profile = CandidateProfile(
@@ -2145,4 +2172,165 @@ def test_discover_executa_fluxo_normal_com_multi_source_job_source() -> None:
     assert len(result.shortlist.items) == 2
     assert result.source_report.source_name == "multi-source"
     assert result.source_report.postings_received == 2
+    expected_keywords = [
+        "estágio desenvolvimento",
+        "desenvolvedor python júnior",
+        "desenvolvedor de software",
+    ]
+    assert [query.keywords for query in source_a.received_queries] == expected_keywords
+    assert [query.keywords for query in source_b.received_queries] == expected_keywords
+
+
+def test_discover_executes_every_strategy_query_in_order() -> None:
+    source = RecordingJobSource()
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Rio de Janeiro, RJ",
+        limit=7,
+    )
+
+    OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert source.received_queries == [
+        JobSourceQuery("estágio desenvolvimento", "Rio de Janeiro, RJ", 7),
+        JobSourceQuery("desenvolvedor python júnior", "Rio de Janeiro, RJ", 7),
+        JobSourceQuery("desenvolvedor de software", "Rio de Janeiro, RJ", 7),
+    ]
+
+
+def test_discover_combines_results_from_different_queries() -> None:
+    internship = _synthetic_posting(
+        external_id="internship-001",
+        title="Estágio em Desenvolvimento",
+    )
+    junior = _synthetic_posting(
+        external_id="junior-001",
+        title="Desenvolvedor Python Júnior",
+    )
+    source = RecordingJobSource(
+        {
+            "estágio desenvolvimento": (internship,),
+            "desenvolvedor python júnior": (junior,),
+        }
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert result.postings == (internship, junior)
+
+
+def test_discover_consolidates_a_posting_repeated_between_queries() -> None:
+    repeated = _synthetic_posting(
+        external_id="repeated-001",
+        title="Desenvolvedor Python Júnior",
+    )
+    source = RecordingJobSource(
+        {
+            "estágio desenvolvimento": (repeated,),
+            "desenvolvedor python júnior": (repeated,),
+        }
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert result.postings == (repeated, repeated)
+    assert tuple(opportunity.id for opportunity in result.opportunities) == (
+        "synthetic:repeated-001",
+    )
+
+
+def test_discover_assesses_opportunities_found_by_entry_level_queries() -> None:
+    posting = _synthetic_posting(
+        external_id="internship-001",
+        title="Estágio em Desenvolvimento Python",
+    )
+    source = RecordingJobSource({"estágio desenvolvimento": (posting,)})
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert tuple(
+        (assessment.opportunity_id, assessment.fit_score.policy_version)
+        for assessment in result.match_assessments
+    ) == (("synthetic:internship-001", "match-v2"),)
+
+
+def test_discover_limits_the_combined_shortlist_to_criteria_limit() -> None:
+    source = RecordingJobSource(
+        {
+            "estágio desenvolvimento": (
+                _synthetic_posting(external_id="job-001"),
+            ),
+            "desenvolvedor de software": (
+                _synthetic_posting(external_id="job-002"),
+            ),
+            "desenvolvedor python júnior": (
+                _synthetic_posting(external_id="job-003"),
+            ),
+        }
+    )
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=2,
+    )
+
+    result = OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert (len(result.opportunities), len(result.shortlist.items)) == (3, 2)
+
+
+def test_discover_continues_after_queries_with_empty_results() -> None:
+    generic = _synthetic_posting(
+        external_id="generic-001",
+        title="Desenvolvedor de Software",
+    )
+    source = RecordingJobSource({"desenvolvedor de software": (generic,)})
+    profile = CandidateProfile(
+        id="candidate-example",
+        target_categories=(JobCategory.SOFTWARE_DEVELOPMENT,),
+    )
+    criteria = SearchCriteria(
+        category=JobCategory.SOFTWARE_DEVELOPMENT,
+        location="Brasil",
+        limit=10,
+    )
+
+    result = OpportunityDiscovery(source=source).discover(profile, criteria)
+
+    assert result.postings == (generic,)
 
