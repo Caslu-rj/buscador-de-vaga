@@ -34,6 +34,11 @@ from buscador_de_vaga.domain import (
     Shortlist,
     WorkplaceMode,
 )
+from buscador_de_vaga.location import (
+    NormalizedLocation,
+    locations_equivalent,
+    normalize_location,
+)
 from buscador_de_vaga.search_strategy import CareerSearchStrategy
 
 
@@ -319,7 +324,7 @@ class OpportunityDiscovery:
         postings = tuple(collected_postings)
         opportunities = _consolidate_postings(postings)
         match_assessments = tuple(
-            _assess_opportunity(opportunity, profile) for opportunity in opportunities
+            _assess_opportunity(opportunity, profile, criteria) for opportunity in opportunities
         )
         assessments_by_opportunity_id = {
             assessment.opportunity_id: assessment for assessment in match_assessments
@@ -398,6 +403,7 @@ def _utc_timestamp(value: datetime) -> float | None:
 def _assess_opportunity(
     opportunity: Opportunity,
     profile: CandidateProfile,
+    criteria: SearchCriteria,
 ) -> MatchAssessment:
     requirements = tuple(
         sorted(
@@ -415,6 +421,7 @@ def _assess_opportunity(
         _assess_requirement(
             requirement,
             profile,
+            criteria=criteria,
             maximum_points=point_allocations[requirement.id],
         )
         for requirement in requirements
@@ -647,18 +654,26 @@ def _entry_subjects_in_title(title: str) -> set[RequirementSubject]:
 
 def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
     signals = _RequirementSignals()
+    normalized_locations_by_city: dict[
+        str,
+        list[tuple[NormalizedLocation, Provenance]],
+    ] = {}
     for posting in opportunity.postings:
         if posting.location is not None:
             workplace_modes = _workplace_modes_in_text(posting.location)
-            normalized_location = _comparison_text(posting.location)
-            if normalized_location is not None and not workplace_modes:
-                location_subject = RequirementSubject.location(normalized_location)
-                signals.record(
-                    location_subject,
-                    Provenance(
-                        origin=posting.source_name,
-                        locator=f"{posting.external_id}#location",
-                    ),
+            normalized_location = normalize_location(posting.location)
+            if normalized_location.city and not workplace_modes:
+                normalized_locations_by_city.setdefault(
+                    normalized_location.city,
+                    [],
+                ).append(
+                    (
+                        normalized_location,
+                        Provenance(
+                            origin=posting.source_name,
+                            locator=f"{posting.external_id}#location",
+                        ),
+                    )
                 )
             for mode in workplace_modes:
                 signals.record(
@@ -679,6 +694,28 @@ def _location_requirements(opportunity: Opportunity) -> tuple[Requirement, ...]:
                     ),
                     importance=importance,
                 )
+
+    for city, locations_with_provenance in normalized_locations_by_city.items():
+        explicit_states = {
+            location.state
+            for location, _ in locations_with_provenance
+            if location.state is not None
+        }
+        if len(explicit_states) <= 1:
+            merged_location = NormalizedLocation(
+                city=city,
+                state=min(explicit_states, default=None),
+            )
+            merged_subject = RequirementSubject.location(merged_location.canonical_value)
+            for _, provenance in locations_with_provenance:
+                signals.record(merged_subject, provenance)
+            continue
+
+        for location, provenance in locations_with_provenance:
+            signals.record(
+                RequirementSubject.location(location.canonical_value),
+                provenance,
+            )
 
     return signals.to_requirements(FitDimension.LOCATION_WORKPLACE_MODE)
 
@@ -725,6 +762,7 @@ def _assess_requirement(
     requirement: Requirement,
     profile: CandidateProfile,
     *,
+    criteria: SearchCriteria,
     maximum_points: int,
 ) -> RequirementAssessment:
     evidence = tuple(
@@ -732,6 +770,7 @@ def _assess_requirement(
             (
                 *_matching_profile_evidence(requirement, profile),
                 *_derived_category_evidence(requirement, profile),
+                *_derived_search_criteria_evidence(requirement, criteria),
             ),
             key=_evidence_sort_key,
         )
@@ -766,7 +805,14 @@ def _matching_profile_evidence(
         evidence
         for evidence in profile.evidence
         if evidence.subject.kind is requirement.subject.kind
-        and _comparison_text(evidence.subject.value) == _comparison_text(requirement.subject.value)
+        and (
+            isinstance(evidence.subject.value, str)
+            and isinstance(requirement.subject.value, str)
+            and locations_equivalent(evidence.subject.value, requirement.subject.value)
+            if requirement.subject.kind is RequirementKind.LOCATION
+            else _comparison_text(evidence.subject.value)
+            == _comparison_text(requirement.subject.value)
+        )
     )
 
 
@@ -793,6 +839,37 @@ def _derived_category_evidence(
             provenance=Provenance(
                 origin="candidate-profile",
                 locator="target_categories",
+            ),
+        ),
+    )
+
+
+def _derived_search_criteria_evidence(
+    requirement: Requirement,
+    criteria: SearchCriteria,
+) -> tuple[Evidence, ...]:
+    if requirement.subject.kind is not RequirementKind.LOCATION:
+        return ()
+
+    subject_value = requirement.subject.value
+    if not isinstance(subject_value, str) or not locations_equivalent(
+        subject_value,
+        criteria.location,
+    ):
+        return ()
+
+    return (
+        Evidence(
+            id="search-criteria:location",
+            subject=requirement.subject,
+            statement=(
+                f"A execução da busca solicita oportunidades em {criteria.location}; "
+                "isso não declara residência do Candidate."
+            ),
+            assertion=EvidenceAssertion.SUPPORTS,
+            provenance=Provenance(
+                origin="search-criteria",
+                locator="location",
             ),
         ),
     )
