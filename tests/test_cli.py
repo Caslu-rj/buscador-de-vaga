@@ -168,8 +168,150 @@ def test_cli_trata_resultado_vazio_como_sucesso(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == "Nenhuma oportunidade encontrada.\n"
+    assert completed.stdout == (
+        "Nenhuma oportunidade encontrada.\n"
+        "Candidaturas recomendadas\n"
+        "Nenhuma candidatura recomendada nesta busca.\n"
+    )
     assert completed.stderr == ""
+
+
+def test_cli_exibe_candidatura_recomendada_depois_das_opportunities(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = _write_json(
+        tmp_path / "candidate-profile-with-python.json",
+        {
+            "schema_version": 1,
+            "id": "candidate-example",
+            "target_categories": ["software-development"],
+            "evidence": [
+                {
+                    "id": "candidate-python",
+                    "subject": {"kind": "skill", "value": "python"},
+                    "statement": "Projeto acadêmico em Python.",
+                    "assertion": "supports",
+                    "provenance": {
+                        "origin": "candidate-profile",
+                        "locator": "projects/python",
+                    },
+                }
+            ],
+        },
+    )
+    postings_path = _write_fixture(
+        tmp_path,
+        keywords="desenvolvedor de software",
+        location="Brasil",
+        postings=[
+            {
+                "external_id": "ready-001",
+                "title": "Desenvolvedor Python",
+                "company": "ACME Tecnologia",
+                "location": "Brasil",
+                "source_url": "https://jobs.example.invalid/ready-001",
+                "collected_at": "2026-08-28T12:00:00Z",
+                "summary": "Python é desejável.",
+            }
+        ],
+    )
+
+    exit_code = main(
+        [
+            "--profile",
+            str(profile_path),
+            "--category",
+            "software-development",
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_path),
+        ]
+    )
+
+    output = capsys.readouterr()
+    heading_position = output.out.index("Candidaturas recomendadas")
+    assert exit_code == 0
+    assert output.out.index("1 oportunidade encontrada.") < heading_position
+    assert "1. Desenvolvedor Python" in output.out[heading_position:]
+    assert "FitScore: 80/100" in output.out[heading_position:]
+    assert "Status: Pronta" in output.out[heading_position:]
+    assert output.err == ""
+
+
+def test_cli_automatico_exibe_candidatura_para_revisao(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_path = _write_json(
+        tmp_path / "candidate-profile-automatic.json",
+        {
+            "schema_version": 1,
+            "id": "candidate-example",
+            "target_categories": ["software-development"],
+            "evidence": [
+                {
+                    "id": "candidate-category",
+                    "subject": {
+                        "kind": "job-category",
+                        "value": "software-development",
+                    },
+                    "statement": "Experiência em desenvolvimento de software.",
+                    "assertion": "supports",
+                    "provenance": {
+                        "origin": "candidate-profile",
+                        "locator": "experience/software",
+                    },
+                },
+                {
+                    "id": "candidate-python",
+                    "subject": {"kind": "skill", "value": "python"},
+                    "statement": "Projeto acadêmico em Python.",
+                    "assertion": "supports",
+                    "provenance": {
+                        "origin": "candidate-profile",
+                        "locator": "projects/python",
+                    },
+                },
+            ],
+        },
+    )
+    postings_path = _write_fixture(
+        tmp_path,
+        keywords="desenvolvedor júnior",
+        location="Brasil",
+        postings=[
+            {
+                "external_id": "review-001",
+                "title": "Desenvolvedor Python",
+                "company": "ACME Tecnologia",
+                "location": "Brasil",
+                "source_url": "https://jobs.example.invalid/review-001",
+                "collected_at": "2026-08-28T12:00:00Z",
+                "summary": "Python é desejável.",
+            }
+        ],
+    )
+
+    exit_code = main(
+        [
+            "--profile",
+            str(profile_path),
+            "--location",
+            "Brasil",
+            "--postings-file",
+            str(postings_path),
+        ]
+    )
+
+    output = capsys.readouterr()
+    heading_position = output.out.index("Candidaturas recomendadas")
+    assert exit_code == 0
+    assert "1. Desenvolvedor Python" in output.out[heading_position:]
+    assert "FitScore: 80/100" in output.out[heading_position:]
+    assert "Status: Revisar" in output.out[heading_position:]
+    assert output.err == ""
 
 
 def test_cli_retorna_erro_acionavel_quando_o_perfil_nao_pode_ser_lido(

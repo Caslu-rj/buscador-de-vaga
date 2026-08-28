@@ -150,6 +150,10 @@ _Avoid_: SearchResult, Favorites
 
 ## Jornada de candidatura
 
+**ApplicationCandidate**:
+A decisão auditável de que uma Opportunity elegível e suficientemente compatível merece avançar para consideração de candidatura, sem criar ou executar uma Application.
+_Avoid_: Application, RecommendedOpportunity
+
 **Application**:
 O registro da candidatura do Candidate a uma Opportunity, incluindo materiais enviados, estado atual e histórico relevante.
 _Avoid_: Apply, Submission
