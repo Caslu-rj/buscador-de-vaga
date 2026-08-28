@@ -11,6 +11,10 @@ from unicodedata import combining
 from unicodedata import normalize as normalize_unicode
 from urllib.parse import urlsplit, urlunsplit
 
+from buscador_de_vaga.application_candidate import (
+    ApplicationCandidate,
+    select_application_candidates,
+)
 from buscador_de_vaga.candidate_positioning import (
     MAX_AUTOMATIC_QUERIES,
     AutomaticSearchPlan,
@@ -129,6 +133,13 @@ class DiscoveryResult:
     match_assessments: tuple[MatchAssessment, ...]
     shortlist: Shortlist
 
+    @property
+    def application_candidates(self) -> tuple[ApplicationCandidate, ...]:
+        """Deriva recomendações manuais apenas da Shortlist existente."""
+        return select_application_candidates(
+            _shortlisted_match_assessments(self.match_assessments, self.shortlist)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class AutomaticDiscoveryResult:
@@ -144,6 +155,26 @@ class AutomaticDiscoveryResult:
     match_assessments: tuple[MatchAssessment, ...]
     alignments_by_opportunity_id: dict[str, CandidateCareerAlignment]
     shortlist: Shortlist
+
+    @property
+    def application_candidates(self) -> tuple[ApplicationCandidate, ...]:
+        """Deriva recomendações automáticas usando os alinhamentos existentes."""
+        return select_application_candidates(
+            _shortlisted_match_assessments(self.match_assessments, self.shortlist),
+            alignments_by_opportunity_id=self.alignments_by_opportunity_id,
+        )
+
+
+def _shortlisted_match_assessments(
+    match_assessments: tuple[MatchAssessment, ...],
+    shortlist: Shortlist,
+) -> tuple[MatchAssessment, ...]:
+    assessments_by_id = {
+        assessment.opportunity_id: assessment for assessment in match_assessments
+    }
+    return tuple(
+        assessments_by_id[opportunity.id] for opportunity in shortlist.items
+    )
 
 
 _CATEGORY_TITLE_ALIASES: dict[JobCategory, tuple[str, ...]] = {

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from buscador_de_vaga.application_candidate import ApplicationCandidateStatus
 from buscador_de_vaga.candidate_positioning import (
     CandidateCareerAlignment,
     CandidateCareerLevel,
@@ -16,6 +17,7 @@ from buscador_de_vaga.candidate_positioning import (
 )
 from buscador_de_vaga.discovery import (
     AutomaticDiscoveryResult,
+    DiscoveryResult,
     InvalidDiscoveryRequest,
     JobSource,
     JobSourceError,
@@ -223,6 +225,7 @@ def _discover_and_present(
     count = len(result.shortlist.items)
     if count == 0:
         print("Nenhuma oportunidade encontrada.")
+        _present_application_candidates(result)
         return 0
 
     noun = "oportunidade" if count == 1 else "oportunidades"
@@ -285,6 +288,7 @@ def _discover_and_present(
         else:
             print("     - (nenhum)")
 
+    _present_application_candidates(result)
     return 0
 
 
@@ -349,6 +353,7 @@ def _discover_and_present_automatic(
     count = len(result.shortlist.items)
     if count == 0:
         print("Nenhuma oportunidade encontrada.")
+        _present_application_candidates(result)
         return 0
 
     noun = "oportunidade" if count == 1 else "oportunidades"
@@ -414,7 +419,35 @@ def _discover_and_present_automatic(
         else:
             print("     - (nenhum)")
 
+    _present_application_candidates(result)
     return 0
+
+
+def _present_application_candidates(
+    result: DiscoveryResult | AutomaticDiscoveryResult,
+) -> None:
+    print("Candidaturas recomendadas")
+    candidates = result.application_candidates
+    if not candidates:
+        print("Nenhuma candidatura recomendada nesta busca.")
+        return
+
+    opportunities_by_id = {
+        opportunity.id: opportunity for opportunity in result.shortlist.items
+    }
+    for position, candidate in enumerate(candidates, start=1):
+        opportunity = opportunities_by_id[candidate.opportunity_id]
+        print(f"{position}. {_safe_terminal_text(opportunity.title)}")
+        print(f"   FitScore: {candidate.fit_score}/100")
+        print(f"   Status: {_application_candidate_status_label(candidate.status)}")
+
+
+def _application_candidate_status_label(status: ApplicationCandidateStatus) -> str:
+    labels = {
+        ApplicationCandidateStatus.READY: "Pronta",
+        ApplicationCandidateStatus.REVIEW: "Revisar",
+    }
+    return labels[status]
 
 
 def _present_automatic_profile_analysis(result: AutomaticDiscoveryResult) -> None:
