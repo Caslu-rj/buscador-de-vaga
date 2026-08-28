@@ -11,6 +11,15 @@ from unicodedata import combining
 from unicodedata import normalize as normalize_unicode
 from urllib.parse import urlsplit, urlunsplit
 
+from buscador_de_vaga.candidate_positioning import (
+    MAX_AUTOMATIC_QUERIES,
+    AutomaticSearchPlan,
+    AutomaticSearchTarget,
+    CandidateCareerAlignment,
+    CandidateCareerLevel,
+    CandidateProfileAssessment,
+    assess_candidate_profile,
+)
 from buscador_de_vaga.domain import (
     CandidateProfile,
     CareerPreference,
@@ -46,7 +55,10 @@ from buscador_de_vaga.location import (
     locations_equivalent,
     normalize_location,
 )
-from buscador_de_vaga.search_strategy import CareerSearchStrategy
+from buscador_de_vaga.search_strategy import (
+    AutomaticCareerSearchStrategy,
+    CareerSearchStrategy,
+)
 
 
 class InvalidDiscoveryRequest(ValueError):
@@ -115,6 +127,22 @@ class DiscoveryResult:
     postings: tuple[JobPosting, ...]
     opportunities: tuple[Opportunity, ...]
     match_assessments: tuple[MatchAssessment, ...]
+    shortlist: Shortlist
+
+
+@dataclass(frozen=True, slots=True)
+class AutomaticDiscoveryResult:
+    """Resultado auditável de uma execução de descoberta automática."""
+
+    candidate_profile_id: str
+    assessment: CandidateProfileAssessment
+    plan: AutomaticSearchPlan
+    policy_version: str
+    source_report: SourceReport
+    postings: tuple[JobPosting, ...]
+    opportunities: tuple[Opportunity, ...]
+    match_assessments: tuple[MatchAssessment, ...]
+    alignments_by_opportunity_id: dict[str, CandidateCareerAlignment]
     shortlist: Shortlist
 
 
@@ -344,6 +372,12 @@ _ELIGIBILITY_ORDER = {
     EligibilityStatus.ELIGIBLE: 0,
     EligibilityStatus.UNCERTAIN: 1,
 }
+_ALIGNMENT_ORDER = {
+    CandidateCareerAlignment.MATCH: 0,
+    CandidateCareerAlignment.REVIEW: 1,
+    CandidateCareerAlignment.BELOW_PROFILE: 2,
+    CandidateCareerAlignment.ABOVE_PROFILE: 3,
+}
 _CAREER_RECOMMENDATION_ORDER = {
     CareerRecommendation.RECOMMENDED: 0,
     CareerRecommendation.REVIEW: 1,
@@ -486,6 +520,250 @@ class OpportunityDiscovery:
             match_assessments=match_assessments,
             shortlist=Shortlist(items=shortlist_items),
         )
+
+
+class _AutomaticOpportunityDiscovery:
+    """Orquestra a descoberta automática orientada pelo CandidateProfile."""
+
+    def __init__(self, *, source: JobSource) -> None:
+        self._source = source
+        self._search_strategy = AutomaticCareerSearchStrategy()
+
+    def discover(
+        self,
+        profile: CandidateProfile,
+        *,
+        location: str,
+        limit: int = 10,
+        career_preference: CareerPreference | None = None,
+    ) -> AutomaticDiscoveryResult:
+        """Busca publicações autonomamente e devolve oportunidades priorizadas."""
+        assessment = assess_candidate_profile(profile)
+        queries = self._search_strategy.build_queries(
+            assessment=assessment,
+            location=location,
+            limit=limit,
+            max_queries=MAX_AUTOMATIC_QUERIES,
+        )
+        plan = AutomaticSearchPlan(
+            targets=tuple(
+                AutomaticSearchTarget(
+                    category=category,
+                    recommended_levels=(
+                        category_assessment.recommended_levels
+                        if (
+                            category_assessment := assessment.get_assessment(category)
+                        )
+                        is not None
+                        else ()
+                    ),
+                )
+                for category in assessment.selected_categories
+            ),
+            queries=queries,
+        )
+
+        collected_postings: list[JobPosting] = []
+        for query in plan.queries:
+            collected_postings.extend(self._source.search(query))
+        postings = tuple(collected_postings)
+        opportunities = _consolidate_postings(postings)
+
+        match_assessments: list[MatchAssessment] = []
+        alignments: dict[str, CandidateCareerAlignment] = {}
+
+        for opportunity in opportunities:
+            opp_category = _opportunity_resolved_category(opportunity)
+            criteria_category = (
+                opp_category
+                if opp_category is not None
+                else (
+                    assessment.selected_categories[0]
+                    if assessment.selected_categories
+                    else (
+                        profile.target_categories[0]
+                        if profile.target_categories
+                        else JobCategory.SOFTWARE_DEVELOPMENT
+                    )
+                )
+            )
+            criteria = SearchCriteria(
+                category=criteria_category,
+                location=location,
+                limit=limit,
+                career_preference=career_preference,
+            )
+            match_assessment = _assess_opportunity(opportunity, profile, criteria)
+            match_assessments.append(match_assessment)
+
+            alignment = _assess_opportunity_career_alignment(opportunity, assessment)
+            alignments[opportunity.id] = alignment
+
+        match_assessments_tuple = tuple(match_assessments)
+        assessments_by_id = {m.opportunity_id: m for m in match_assessments_tuple}
+
+        shortlist_items = _ranked_automatic_shortlist_items(
+            opportunities,
+            assessments_by_id,
+            alignments,
+            assessment,
+            career_preference=career_preference,
+        )[:limit]
+
+        return AutomaticDiscoveryResult(
+            candidate_profile_id=profile.id,
+            assessment=assessment,
+            plan=plan,
+            policy_version=_MATCH_POLICY_VERSION,
+            source_report=SourceReport(
+                source_name=self._source.name,
+                postings_received=len(postings),
+            ),
+            postings=postings,
+            opportunities=opportunities,
+            match_assessments=match_assessments_tuple,
+            alignments_by_opportunity_id=alignments,
+            shortlist=Shortlist(items=shortlist_items),
+        )
+
+
+def _opportunity_resolved_category(opportunity: Opportunity) -> JobCategory | None:
+    category_reqs = _category_requirements(opportunity)
+    if (
+        len(category_reqs) == 1
+        and category_reqs[0].is_resolved
+        and isinstance(category_reqs[0].subject.value, JobCategory)
+    ):
+        return category_reqs[0].subject.value
+    return None
+
+
+def _assess_opportunity_career_alignment(
+    opportunity: Opportunity,
+    assessment: CandidateProfileAssessment,
+) -> CandidateCareerAlignment:
+    opp_category = _opportunity_resolved_category(opportunity)
+    if opp_category is None:
+        return CandidateCareerAlignment.REVIEW
+
+    cat_assessment = assessment.get_assessment(opp_category)
+    if cat_assessment is None:
+        return CandidateCareerAlignment.REVIEW
+
+    opportunity_levels: set[CandidateCareerLevel] = set()
+    for requirement in _entry_requirements(opportunity):
+        level = _career_level_for_requirement(requirement)
+        if level is None:
+            continue
+        if not requirement.is_resolved:
+            return CandidateCareerAlignment.REVIEW
+        opportunity_levels.add(level)
+
+    if not opportunity_levels or _career_levels_conflict(opportunity_levels):
+        return CandidateCareerAlignment.REVIEW
+
+    candidate_levels = set(cat_assessment.recommended_levels)
+    if not candidate_levels or CandidateCareerLevel.UNKNOWN in candidate_levels:
+        return CandidateCareerAlignment.REVIEW
+
+    if opportunity_levels & candidate_levels:
+        return CandidateCareerAlignment.MATCH
+
+    is_early_career_candidate = candidate_levels <= {
+            CandidateCareerLevel.JUNIOR,
+            CandidateCareerLevel.INTERNSHIP,
+    }
+    if is_early_career_candidate and opportunity_levels & {
+        CandidateCareerLevel.MID_LEVEL,
+        CandidateCareerLevel.SENIOR,
+    }:
+        return CandidateCareerAlignment.ABOVE_PROFILE
+
+    if (
+        CandidateCareerLevel.SENIOR in candidate_levels
+        and opportunity_levels
+        <= {CandidateCareerLevel.INTERNSHIP, CandidateCareerLevel.JUNIOR}
+    ):
+        return CandidateCareerAlignment.BELOW_PROFILE
+
+    return CandidateCareerAlignment.REVIEW
+
+
+def _career_level_for_requirement(
+    requirement: Requirement,
+) -> CandidateCareerLevel | None:
+    levels_by_subject = {
+        RequirementSubject.seniority(Seniority.SENIOR): CandidateCareerLevel.SENIOR,
+        RequirementSubject.seniority(Seniority.MID_LEVEL): CandidateCareerLevel.MID_LEVEL,
+        RequirementSubject.seniority(Seniority.JUNIOR): CandidateCareerLevel.JUNIOR,
+        RequirementSubject.entry_program(
+            EntryProgram.INTERNSHIP
+        ): CandidateCareerLevel.INTERNSHIP,
+    }
+    return levels_by_subject.get(requirement.subject)
+
+
+def _career_levels_conflict(levels: set[CandidateCareerLevel]) -> bool:
+    seniority_levels = levels - {CandidateCareerLevel.INTERNSHIP}
+    return len(seniority_levels) > 1 or (
+        CandidateCareerLevel.INTERNSHIP in levels
+        and bool(
+            seniority_levels
+            & {CandidateCareerLevel.MID_LEVEL, CandidateCareerLevel.SENIOR}
+        )
+    )
+
+
+def _ranked_automatic_shortlist_items(
+    opportunities: tuple[Opportunity, ...],
+    assessments_by_opportunity_id: dict[str, MatchAssessment],
+    alignments_by_opportunity_id: dict[str, CandidateCareerAlignment],
+    candidate_assessment: CandidateProfileAssessment,
+    *,
+    career_preference: CareerPreference | None,
+) -> tuple[Opportunity, ...]:
+    visible_opportunities = tuple(
+        opp
+        for opp in opportunities
+        if assessments_by_opportunity_id[opp.id].eligibility_status
+        is not EligibilityStatus.INELIGIBLE
+    )
+
+    def sort_key(opportunity: Opportunity) -> tuple[object, ...]:
+        match_assessment = assessments_by_opportunity_id[opportunity.id]
+        alignment = alignments_by_opportunity_id[opportunity.id]
+        opp_category = _opportunity_resolved_category(opportunity)
+        cat_assessment = (
+            candidate_assessment.get_assessment(opp_category) if opp_category else None
+        )
+        cat_score = cat_assessment.profile_score if cat_assessment else 0
+        latest_update = _latest_source_update_timestamp(opportunity)
+
+        if career_preference is not None and match_assessment.career_preference_assessment:
+            career_assessment = match_assessment.career_preference_assessment
+            return (
+                _ELIGIBILITY_ORDER[match_assessment.eligibility_status],
+                _ALIGNMENT_ORDER[alignment],
+                _CAREER_RECOMMENDATION_ORDER[career_assessment.recommendation],
+                -match_assessment.fit_score.value,
+                _CAREER_PRIORITY_ORDER[career_assessment.priority],
+                -cat_score,
+                0 if latest_update is not None else 1,
+                -latest_update if latest_update is not None else 0.0,
+                opportunity.id,
+            )
+
+        return (
+            _ELIGIBILITY_ORDER[match_assessment.eligibility_status],
+            _ALIGNMENT_ORDER[alignment],
+            -match_assessment.fit_score.value,
+            -cat_score,
+            0 if latest_update is not None else 1,
+            -latest_update if latest_update is not None else 0.0,
+            opportunity.id,
+        )
+
+    return tuple(sorted(visible_opportunities, key=sort_key))
 
 
 def _ranked_shortlist_items(

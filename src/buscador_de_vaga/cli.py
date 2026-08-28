@@ -9,12 +9,19 @@ from pathlib import Path
 
 import httpx
 
+from buscador_de_vaga.candidate_positioning import (
+    CandidateCareerAlignment,
+    CandidateCareerLevel,
+    CandidateProfileConfidence,
+)
 from buscador_de_vaga.discovery import (
+    AutomaticDiscoveryResult,
     InvalidDiscoveryRequest,
     JobSource,
     JobSourceError,
     JobSourceFailureKind,
     OpportunityDiscovery,
+    _AutomaticOpportunityDiscovery,
 )
 from buscador_de_vaga.domain import (
     CandidateProfile,
@@ -96,16 +103,19 @@ def main(
         )
         return 2
 
-    criteria = SearchCriteria(
-        category=JobCategory(arguments.category),
-        location=arguments.location,
-        limit=arguments.limit,
-        career_preference=(
-            CareerPreference(arguments.career_preference)
-            if arguments.career_preference is not None
-            else None
-        ),
-    )
+    is_manual = arguments.category is not None
+
+    if is_manual:
+        criteria = SearchCriteria(
+            category=JobCategory(arguments.category),
+            location=arguments.location,
+            limit=arguments.limit,
+            career_preference=(
+                CareerPreference(arguments.career_preference)
+                if arguments.career_preference is not None
+                else None
+            ),
+        )
 
     if has_postings_file:
         assert arguments.postings_file is not None
@@ -118,7 +128,19 @@ def main(
                 file=sys.stderr,
             )
             return 2
-        return _discover_and_present(profile=profile, criteria=criteria, source=source)
+        if is_manual:
+            return _discover_and_present(profile=profile, criteria=criteria, source=source)
+        return _discover_and_present_automatic(
+            profile=profile,
+            location=arguments.location,
+            limit=arguments.limit,
+            career_preference=(
+                CareerPreference(arguments.career_preference)
+                if arguments.career_preference is not None
+                else None
+            ),
+            source=source,
+        )
 
     env = os.environ if environ is None else environ
 
@@ -137,7 +159,19 @@ def main(
             environ=env,
             client=http_client,
         )
-        return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
+        if is_manual:
+            return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
+        return _discover_and_present_automatic(
+            profile=profile,
+            location=arguments.location,
+            limit=arguments.limit,
+            career_preference=(
+                CareerPreference(arguments.career_preference)
+                if arguments.career_preference is not None
+                else None
+            ),
+            source=live_source,
+        )
 
     with httpx.Client(timeout=10.0, follow_redirects=False) as client:
         live_source = _build_live_sources(
@@ -146,7 +180,19 @@ def main(
             environ=env,
             client=client,
         )
-        return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
+        if is_manual:
+            return _discover_and_present(profile=profile, criteria=criteria, source=live_source)
+        return _discover_and_present_automatic(
+            profile=profile,
+            location=arguments.location,
+            limit=arguments.limit,
+            career_preference=(
+                CareerPreference(arguments.career_preference)
+                if arguments.career_preference is not None
+                else None
+            ),
+            source=live_source,
+        )
 
 
 def _discover_and_present(
@@ -274,6 +320,179 @@ def _career_recommendation_label(recommendation: CareerRecommendation) -> str:
     return labels[recommendation]
 
 
+def _discover_and_present_automatic(
+    *,
+    profile: CandidateProfile,
+    location: str,
+    limit: int,
+    career_preference: CareerPreference | None,
+    source: JobSource,
+) -> int:
+    try:
+        result = _AutomaticOpportunityDiscovery(source=source).discover(
+            profile,
+            location=location,
+            limit=limit,
+            career_preference=career_preference,
+        )
+    except SyntheticSourceError as error:
+        print(f"Erro: {error}", file=sys.stderr)
+        print(
+            "Ação: use uma fixture correspondente aos argumentos da busca.",
+            file=sys.stderr,
+        )
+        return 2
+    except JobSourceError as error:
+        return _report_source_error(error)
+
+    _present_automatic_profile_analysis(result)
+    count = len(result.shortlist.items)
+    if count == 0:
+        print("Nenhuma oportunidade encontrada.")
+        return 0
+
+    noun = "oportunidade" if count == 1 else "oportunidades"
+    adjective = "encontrada" if count == 1 else "encontradas"
+    print(f"{count} {noun} {adjective}.")
+    assessments_by_id = {
+        assessment.opportunity_id: assessment for assessment in result.match_assessments
+    }
+    for position, opportunity in enumerate(result.shortlist.items, start=1):
+        assessment = assessments_by_id[opportunity.id]
+        alignment = result.alignments_by_opportunity_id.get(opportunity.id)
+        print(f"{position}. {_safe_terminal_text(opportunity.title)}")
+        if opportunity.company is not None:
+            print(f"   Empresa: {_safe_terminal_text(opportunity.company)}")
+        if opportunity.location is not None:
+            print(f"   Local: {_safe_terminal_text(opportunity.location)}")
+        print(f"   URL: {_safe_terminal_text(opportunity.source_url)}")
+        print(f"   Elegibilidade: {_eligibility_label(assessment.eligibility_status)}")
+        if alignment is not None:
+            print(f"   Alinhamento de carreira: {_career_alignment_label(alignment)}")
+        print(
+            f"   FitScore: {assessment.fit_score.value}/100 "
+            f"(cobertura de evidência: {assessment.fit_score.evidence_coverage}%)"
+        )
+        if assessment.career_preference_assessment is not None:
+            career_assessment = assessment.career_preference_assessment
+            print(
+                "   Nível de carreira: "
+                f"{_career_priority_label(career_assessment.priority)}"
+            )
+            print(
+                "   Recomendação de carreira: "
+                f"{_career_recommendation_label(career_assessment.recommendation)}"
+            )
+        print("   Breakdown:")
+        for item in assessment.fit_score.breakdown:
+            print(
+                f"     - {item.dimension.value}: {item.awarded_points}/{item.weight} pts "
+                f"(cobertura: {item.covered_weight}/{item.weight})"
+            )
+        print("   Pontos fortes:")
+        if assessment.strengths:
+            for strength in assessment.strengths:
+                print(f"     - {_safe_terminal_text(strength.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Skill Gaps:")
+        if assessment.skill_gaps:
+            for gap in assessment.skill_gaps:
+                print(f"     - {_safe_terminal_text(gap.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Requisitos não informados:")
+        if assessment.unknown_requirements:
+            for unknown in assessment.unknown_requirements:
+                print(f"     - {_safe_terminal_text(unknown.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+        print("   Possíveis impeditivos:")
+        if assessment.possible_blockers:
+            for blocker in assessment.possible_blockers:
+                print(f"     - {_safe_terminal_text(blocker.assessment.requirement.statement)}")
+        else:
+            print("     - (nenhum)")
+
+    return 0
+
+
+def _present_automatic_profile_analysis(result: AutomaticDiscoveryResult) -> None:
+    print("Análise automática do currículo")
+    relevant_assessments = tuple(
+        sorted(
+            (
+                assessment
+                for assessment in result.assessment.category_assessments
+                if assessment.profile_score > 0
+            ),
+            key=lambda assessment: (-assessment.profile_score, assessment.category.value),
+        )
+    )
+    if relevant_assessments:
+        for position, assessment in enumerate(relevant_assessments, start=1):
+            levels = ", ".join(
+                _candidate_career_level_label(level)
+                for level in assessment.recommended_levels
+            )
+            print(f"{position}. {assessment.category.value}")
+            print(f"   Compatibilidade do perfil: {assessment.profile_score}/100")
+            print(
+                "   Confiança: "
+                f"{_candidate_profile_confidence_label(assessment.confidence)}"
+            )
+            print(f"   Níveis recomendados: {levels}")
+    else:
+        print("  (nenhuma categoria relevante)")
+
+    print("Categorias pesquisadas:")
+    if result.plan.targets:
+        for target in result.plan.targets:
+            print(f"  - {target.category.value}")
+    else:
+        print("  - (nenhuma)")
+
+    print("Consultas geradas:")
+    if result.plan.queries:
+        for query in result.plan.queries:
+            print(f"  - {_safe_terminal_text(query.keywords)}")
+    else:
+        print("  - (nenhuma)")
+
+
+def _candidate_profile_confidence_label(
+    confidence: CandidateProfileConfidence,
+) -> str:
+    labels = {
+        CandidateProfileConfidence.HIGH: "Alta",
+        CandidateProfileConfidence.MEDIUM: "Média",
+        CandidateProfileConfidence.LOW: "Baixa",
+        CandidateProfileConfidence.NONE: "Nenhuma",
+    }
+    return labels[confidence]
+
+
+def _candidate_career_level_label(level: CandidateCareerLevel) -> str:
+    labels = {
+        CandidateCareerLevel.INTERNSHIP: "Estágio",
+        CandidateCareerLevel.JUNIOR: "Júnior",
+        CandidateCareerLevel.MID_LEVEL: "Pleno",
+        CandidateCareerLevel.SENIOR: "Sênior",
+        CandidateCareerLevel.UNKNOWN: "Não informado",
+    }
+    return labels[level]
+
+
+def _career_alignment_label(alignment: CandidateCareerAlignment) -> str:
+    labels = {
+        CandidateCareerAlignment.MATCH: "Compatível",
+        CandidateCareerAlignment.REVIEW: "Revisar",
+        CandidateCareerAlignment.ABOVE_PROFILE: "Acima do perfil",
+        CandidateCareerAlignment.BELOW_PROFILE: "Abaixo do perfil",
+    }
+    return labels[alignment]
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="buscar-vagas",
@@ -282,7 +501,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", required=True, help="Caminho do CandidateProfile JSON.")
     parser.add_argument(
         "--category",
-        required=True,
+        required=False,
         choices=tuple(category.value for category in JobCategory),
         help="JobCategory usada nesta execução.",
     )
